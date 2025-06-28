@@ -58,7 +58,9 @@ def save_sales_data_and_clear_cache(df):
     Saves the given DataFrame to 'sales_data.csv' and clears the cache
     for `load_sales_data_cached` to force a fresh reload next time.
     """
-    df.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').to_csv(SALES_DATA_PATH, index=False)
+    # Ensure the DataFrame is deduplicated before saving
+    df = df.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
+    df.to_csv(SALES_DATA_PATH, index=False)
     st.cache_data.clear() # Clear cache for load_sales_data_cached()
 
 @st.cache_data(show_spinner=False)
@@ -496,7 +498,11 @@ if 'app_initialized' not in st.session_state:
 
 # --- Initial Sample Data Creation (Run once if files don't exist) ---
 def create_sample_data_if_empty_and_initialize():
-    """Creates sample sales and event data if files are empty or don't exist, then reruns app."""
+    """
+    Creates sample sales and event data if files are empty or don't exist.
+    This function specifically avoids creating data for *today's date* to prevent immediate overlaps
+    with user's first input for today.
+    """
     sales_df_check = load_sales_data_cached()
     events_df_check = load_events_data_cached()
 
@@ -504,6 +510,7 @@ def create_sample_data_if_empty_and_initialize():
 
     if sales_df_check.empty:
         st.info("Creating sample sales data for a quick start...")
+        # Create data up to yesterday, ensuring there's no overlap with today's potential input
         dates = pd.to_datetime(pd.date_range(end=datetime.now() - timedelta(days=1), periods=60, freq='D'))
         np.random.seed(42)
         sales = np.random.randint(500, 1500, size=len(dates)) + np.random.randn(len(dates)) * 50
@@ -675,8 +682,8 @@ with tab1:
         if add_record_button:
             input_date_dt = pd.to_datetime(input_date)
             
-            # Create a new record DataFrame
-            new_record_df = pd.DataFrame([{
+            # Create a new record DataFrame for the input
+            new_input_record_df = pd.DataFrame([{
                 'Date': input_date_dt,
                 'Sales': sales,
                 'Customers': customers,
@@ -684,33 +691,48 @@ with tab1:
                 'Weather': weather
             }])
 
-            # Filter out the old record for the same date if it exists
-            # Then concatenate the new record. This ensures update-or-add behavior.
-            st.session_state.sales_data = st.session_state.sales_data[
-                st.session_state.sales_data['Date'] != input_date_dt
+            # Fetch the current sales data from session state
+            current_sales_data_in_session = st.session_state.sales_data.copy()
+
+            # Remove any existing record for the input_date_dt from the current data
+            filtered_sales_data = current_sales_data_in_session[
+                current_sales_data_in_session['Date'] != input_date_dt
             ]
-            st.session_state.sales_data = pd.concat(
-                [st.session_state.sales_data, new_record_df], ignore_index=True
-            )
             
+            # Concatenate the filtered data with the new input record
+            updated_sales_data = pd.concat(
+                [filtered_sales_data, new_input_record_df], ignore_index=True
+            )
+
+            # Ensure the combined DataFrame is correctly sorted and deduplicated by date before saving
+            # This is already handled by save_sales_data_and_clear_cache but doing it explicitly here too
+            # before updating session state for immediate display consistency.
+            updated_sales_data = updated_sales_data.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
+
+            st.session_state.sales_data = updated_sales_data # Update session state first
+
             st.success(f"Record for {input_date.strftime('%Y-%m-%d')} updated/added successfully! AI will retrain.")
             
             # After adding or updating, always save to disk, clear cache, and force rerun
-            save_sales_data_and_clear_cache(st.session_state.sales_data)
-            st.session_state.sales_data = load_sales_data_cached() # Reload from disk to ensure session state consistency
+            save_sales_data_and_clear_cache(st.session_state.sales_data) # Save the now clean session state data
+            st.session_state.sales_data = load_sales_data_cached() # Re-load from disk to ensure freshest data
             st.session_state.sales_model = None # Force model retraining
             st.session_state.customers_model = None # Force model retraining
             st.experimental_rerun() # Trigger a full rerun to update all components
 
-    st.subheader("Last 7 Days of Inputs")
+    st.subheader("Most Recently Inputted/Updated Data (Last 7 Unique Days)")
+    # This section now exclusively uses the sorted and deduplicated session state data
     if not st.session_state.sales_data.empty:
-        # The underlying load_sales_data_cached() already ensures deduplication.
-        # So, sorting and taking head(7) from the session state should now be correct.
+        # Filter for recent inputs by checking if they are not part of the initial sample data range
+        # For simplicity, let's consider data from 'today' onwards as 'inputted' or explicitly updated.
+        # This is a simplification; a more robust solution would track actual input dates.
+        # For now, let's just show the latest 7 *unique* records that exist in the (deduplicated) data.
         display_data = st.session_state.sales_data.sort_values('Date', ascending=False).head(7).copy()
         display_data['Date'] = display_data['Date'].dt.strftime('%Y-%m-%d')
         st.dataframe(display_data, use_container_width=True)
         
-        st.subheader("Edit/Delete Records")
+        st.subheader("Edit/Delete Records (Select from all records)")
+        # This multiselect will always reflect the full, deduplicated dataset.
         unique_dates_for_selectbox = sorted(st.session_state.sales_data['Date'].dt.strftime('%Y-%m-%d').unique().tolist(), reverse=True)
         
         if unique_dates_for_selectbox:
@@ -770,6 +792,43 @@ with tab1:
             st.info("No sales records available for editing or deletion.")
     else:
         st.info("No sales data entered yet. Add records above to see them here and enable editing/deletion.")
+
+    # --- New Feature: Browse All Records by Month ---
+    st.subheader("Browse All Records by Month")
+    if not st.session_state.sales_data.empty:
+        df_all_sales = st.session_state.sales_data.copy()
+        df_all_sales['YearMonth'] = df_all_sales['Date'].dt.to_period('M')
+
+        # Get unique YearMonths for selection, sorted descending
+        unique_year_months = sorted(df_all_sales['YearMonth'].unique(), reverse=True)
+        
+        # Format for display in selectbox
+        formatted_year_months = [ym.strftime('%B %Y') for ym in unique_year_months]
+        
+        # Create a mapping from formatted string back to Period object
+        ym_map = {ym.strftime('%B %Y'): ym for ym in unique_year_months}
+
+        if formatted_year_months:
+            selected_ym_str = st.selectbox(
+                "Select Month and Year to View:",
+                options=formatted_year_months,
+                key='month_year_selector'
+            )
+            
+            selected_ym_period = ym_map[selected_ym_str]
+
+            # Filter data for the selected month/year
+            filtered_monthly_data = df_all_sales[
+                df_all_sales['YearMonth'] == selected_ym_period
+            ].sort_values('Date', ascending=False).drop('YearMonth', axis=1) # Drop temp column
+
+            filtered_monthly_data['Date'] = filtered_monthly_data['Date'].dt.strftime('%Y-%m-%d')
+            st.dataframe(filtered_monthly_data, use_container_width=True)
+        else:
+            st.info("No historical data available to browse by month.")
+    else:
+        st.info("No historical data available to browse by month.")
+    # --- End New Feature ---
 
 
 with tab2:
