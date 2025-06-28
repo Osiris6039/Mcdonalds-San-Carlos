@@ -674,9 +674,16 @@ with tab1:
 
         if add_record_button:
             input_date_dt = pd.to_datetime(input_date)
+            # Check if the date already exists in the DataFrame
             if input_date_dt in st.session_state.sales_data['Date'].values:
-                st.warning(f"Data for {input_date.strftime('%Y-%m-%d')} already exists. Please edit the existing record or choose a different date.")
+                # If it exists, update the existing record directly
+                st.session_state.sales_data.loc[
+                    st.session_state.sales_data['Date'] == input_date_dt,
+                    ['Sales', 'Customers', 'Add_on_Sales', 'Weather']
+                ] = [sales, customers, add_on_sales, weather]
+                st.success(f"Record for {input_date.strftime('%Y-%m-%d')} updated successfully! AI will retrain.")
             else:
+                # If it does not exist, add a new record by concatenating
                 new_record = pd.DataFrame([{
                     'Date': input_date_dt,
                     'Sales': sales,
@@ -685,15 +692,18 @@ with tab1:
                     'Weather': weather
                 }])
                 st.session_state.sales_data = pd.concat([st.session_state.sales_data, new_record], ignore_index=True)
-                save_sales_data_and_clear_cache(st.session_state.sales_data)
-                st.session_state.sales_data = load_sales_data_cached()
                 st.success("Record added successfully! AI will retrain automatically.")
-                st.session_state.sales_model = None
-                st.session_state.customers_model = None
-                st.experimental_rerun()
+            
+            # After adding or updating, always save to disk, clear cache, and force rerun
+            save_sales_data_and_clear_cache(st.session_state.sales_data)
+            st.session_state.sales_data = load_sales_data_cached() # Reload from disk to ensure session state consistency
+            st.session_state.sales_model = None # Force model retraining
+            st.session_state.customers_model = None # Force model retraining
+            st.experimental_rerun() # Trigger a full rerun to update all components
 
     st.subheader("Last 7 Days of Inputs")
     if not st.session_state.sales_data.empty:
+        # Ensure the display logic also handles potential duplicates if they somehow got in (e.g. initial sample data)
         display_data = st.session_state.sales_data.sort_values('Date', ascending=False).drop_duplicates(subset=['Date'], keep='first').head(7).copy()
         display_data['Date'] = display_data['Date'].dt.strftime('%Y-%m-%d')
         st.dataframe(display_data, use_container_width=True)
