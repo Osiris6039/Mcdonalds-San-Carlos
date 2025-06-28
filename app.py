@@ -1023,7 +1023,7 @@ with tab3:
                                 st.error(f"Error during Prophet cross-validation: {e}. Ensure sufficient data and model setup.")
         
 
-    if not models_ready:
+        if not:
             st.error("AI models are not ready. Please ensure you have sufficient data and the models are trained first.")
     else:
         st.info("Click 'Calculate Accuracy' to see how well the AI performs on past data.")
