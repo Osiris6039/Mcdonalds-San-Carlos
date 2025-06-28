@@ -748,7 +748,8 @@ with tab1:
 
                 st.markdown(f"**Selected Record for {selected_date_str_monthly}:**")
                 
-                with st.form("edit_delete_form_monthly", clear_on_submit=False): # Unique key for this form
+                # IMPORTANT FIX: Use a single form for update/delete actions
+                with st.form("edit_delete_form_monthly", clear_on_submit=False):
                     edit_sales_monthly = st.number_input("Edit Sales", value=float(selected_row_monthly['Sales']), format="%.2f", key='edit_sales_input_monthly')
                     edit_customers_monthly = st.number_input("Edit Customers", value=int(selected_row_monthly['Customers']), step=1, key='edit_customers_input_monthly')
                     edit_add_on_sales_monthly = st.number_input("Edit Add-on Sales", value=float(selected_row_monthly['Add_on_Sales']), format="%.2f", key='edit_add_on_sales_input_monthly')
@@ -760,16 +761,15 @@ with tab1:
                         default_weather_index_monthly = 0
                     edit_weather_monthly = st.selectbox("Edit Weather", weather_options_monthly, index=default_weather_index_monthly, key='edit_weather_select_monthly')
 
+                    # Place both buttons within the same form context
                     col_edit_del_btns1_monthly, col_edit_del_btns2_monthly = st.columns(2)
-                    with col_edit_del_btns1_monthly:
-                        update_button_monthly = st.form_submit_button("Update Record (Monthly View)", key='update_btn_monthly')
-                    with col_edit_del_btns2_monthly:
-                        delete_button_monthly = st.form_submit_button("Delete Record (Monthly View)", key='delete_btn_monthly')
+                    update_button_monthly_submit = col_edit_del_btns1_monthly.form_submit_button("Update Record (Monthly View)", key='update_btn_monthly')
+                    delete_button_monthly_submit = col_edit_del_btns2_monthly.form_submit_button("Delete Record (Monthly View)", key='delete_btn_monthly')
 
-                    if update_button_monthly:
+                    if update_button_monthly_submit:
                         st.session_state.sales_data.loc[
                             st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str_monthly),
-                            ['Sales', 'Customers', 'Add_on_sales', 'Weather']
+                            ['Sales', 'Customers', 'Add_on_Sales', 'Weather']
                         ] = [edit_sales_monthly, edit_customers_monthly, edit_add_on_sales_monthly, edit_weather_monthly]
                         save_sales_data_and_clear_cache(st.session_state.sales_data)
                         st.session_state.sales_data = load_sales_data_cached()
@@ -777,7 +777,7 @@ with tab1:
                         st.session_state.sales_model = None
                         st.session_state.customers_model = None
                         st.experimental_rerun()
-                    elif delete_button_monthly:
+                    elif delete_button_monthly_submit:
                         st.session_state.sales_data = st.session_state.sales_data[
                             st.session_state.sales_data['Date'] != pd.to_datetime(selected_date_str_monthly)
                         ].reset_index(drop=True)
@@ -931,7 +931,8 @@ with tab3:
                             'Date': st.session_state.sales_data['Date'].iloc[X_hist.index],
                             'Actual Sales': y_sales_hist,
                             'Predicted Sales': predicted_sales_hist,
-                            'Actual Customers': predicted_customers_hist
+                            'Actual Customers': y_customers_hist,
+                            'Predicted Customers': predicted_customers_hist
                         })
 
                         mae_sales = mean_absolute_error(accuracy_plot_df['Actual Sales'], accuracy_plot_df['Predicted Sales'])
