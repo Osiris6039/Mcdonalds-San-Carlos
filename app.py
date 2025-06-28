@@ -379,67 +379,78 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
         st.warning("RandomForest models are not trained. Please ensure you have sufficient data and a model is selected and trained.")
         return pd.DataFrame()
 
-    # Ensure consistent Timestamp type for all date operations
-    # Convert datetime.now() to pd.Timestamp immediately for consistency
     today = pd.Timestamp(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
-    # Generate forecast_dates as a list of pd.Timestamp objects
     forecast_dates = [today + pd.Timedelta(days=i) for i in range(1, num_days + 1)]
 
-    historical_data_for_lags = sales_df.copy()
-    historical_data_for_lags['Date'] = pd.to_datetime(historical_data_for_lags['Date'])
-    historical_data_for_lags = historical_data_for_lags.sort_values('Date').reset_index(drop=True)
+    # Combine historical and future forecasted data for lag lookups
+    # This buffer will hold {'Date': Timestamp, 'Sales': float, 'Customers': int}
+    # Start with historical data
+    combined_data_buffer = []
+    if not sales_df.empty:
+        for index, row in sales_df.iterrows():
+            combined_data_buffer.append({
+                'Date': pd.Timestamp(row['Date']),
+                'Sales': row['Sales'],
+                'Customers': row['Customers']
+            })
+    
+    # Sort the buffer by date to ensure chronological order for lag lookups
+    combined_data_buffer.sort(key=lambda x: x['Date'])
 
     forecast_results = []
     
-    # Initialize current day's lag features from the *latest* actual historical data
-    # Use mean if not enough data for actual last value, else 0.
-    avg_sales_history = historical_data_for_lags['Sales'].mean() if not historical_data_for_lags.empty else 0.0
-    avg_customers_history = historical_data_for_lags['Customers'].mean() if not historical_data_for_lags.empty else 0.0
+    # Initialize lag-1 values for the first forecast day
+    current_sales_lag1 = combined_data_buffer[-1]['Sales'] if combined_data_buffer else 0.0
+    current_customers_lag1 = combined_data_buffer[-1]['Customers'] if combined_data_buffer else 0.0
 
-    current_sales_lag1 = historical_data_for_lags['Sales'].iloc[-1].item() if not historical_data_for_lags.empty else avg_sales_history
-    current_customers_lag1 = historical_data_for_lags['Customers'].iloc[-1].item() if not historical_data_for_lags.empty else avg_customers_history
-    
-    # Get last 7 days of sales/customers for Sales_Lag7/Customers_Lag7
-    # Pad with mean or 0 if historical data is short
-    last_7_sales_raw = historical_data_for_lags['Sales'].tail(7).tolist()
-    last_7_customers_raw = historical_data_for_lags['Customers'].tail(7).tolist()
-    
-    last_7_sales = ([avg_sales_history] * (7 - len(last_7_sales_raw))) + last_7_sales_raw
-    last_7_customers = ([avg_customers_history] * (7 - len(last_7_customers_raw))) + last_7_customers_raw
-
+    # Average sales/customers from historical data for padding if lags go too far back
+    avg_sales_history = sales_df['Sales'].mean() if not sales_df.empty else 0.0
+    avg_customers_history = sales_df['Customers'].mean() if not sales_df.empty else 0.0
 
     for i in range(num_days):
-        # Retrieve the date for the current iteration. It's already a pd.Timestamp from forecast_dates list.
         current_forecast_date = forecast_dates[i]
         
-        # Explicitly ensure current_weather_input is a string before comparison to avoid Series-like behavior
-        # The 'next' function ensures a single string is returned ('Sunny' if no match)
+        # Explicitly ensure current_weather_input is a string before comparison
         current_weather_input_str = str(next((item['weather'] for item in future_weather_inputs if item['date'] == current_forecast_date.strftime('%Y-%m-%d')), 'Sunny'))
 
-        # Directly access attributes from current_forecast_date (which is a pd.Timestamp)
+        # Calculate Sales_Lag7 and Customers_Lag7 by looking back in the combined_data_buffer
+        lag7_date = current_forecast_date - pd.Timedelta(days=7)
+        
+        lag7_sales_val = avg_sales_history # Default fallback
+        lag7_customers_val = avg_customers_history # Default fallback
+
+        # Search the buffer for the lag7_date
+        found_lag7 = False
+        for entry in combined_data_buffer:
+            if entry['Date'] == lag7_date:
+                lag7_sales_val = entry['Sales']
+                lag7_customers_val = entry['Customers']
+                found_lag7 = True
+                break
+        
+        # If the exact date wasn't found, and it's before any data we have, use the average fallback.
+        # Otherwise, the default (avg_sales_history) will be used.
+
         current_features_data = {
             'day_of_week': current_forecast_date.weekday(),
             'day_of_year': current_forecast_date.dayofyear,
             'month': current_forecast_date.month,
             'year': current_forecast_date.year,
-            # Access week directly from isocalendar tuple to avoid Series issues
             'week_of_year': current_forecast_date.isocalendar()[1], 
             'is_weekend': int(current_forecast_date.weekday() in [5, 6]),
             'Sales_Lag1': current_sales_lag1,
             'Customers_Lag1': current_customers_lag1,
-            'Sales_Lag7': last_7_sales[i], 
-            'Customers_Lag7': last_7_customers[i], 
+            'Sales_Lag7': lag7_sales_val, 
+            'Customers_Lag7': lag7_customers_val, 
             'is_event': 0,
             'event_impact_score': 0.0
         }
 
         all_weather_conditions = st.session_state.get('all_weather_conditions', ['Sunny', 'Cloudy', 'Rainy', 'Snowy'])
         for cond in all_weather_conditions:
-            # FIX: Use direct integer conversion of the boolean result
             current_features_data[f'weather_{cond}'] = int(current_weather_input_str == cond)
 
         if not events_df.empty:
-            # When merging/checking events, compare date parts only for robustness
             matching_event = events_df[events_df['Event_Date'].dt.date == current_forecast_date.date()]
             if not matching_event.empty:
                 current_features_data['is_event'] = 1
@@ -449,14 +460,12 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
         input_for_prediction = pd.DataFrame([current_features_data])
         
         feature_cols = st.session_state.get('rf_feature_columns', [])
-        # Ensure input_for_prediction has all expected feature columns, filling with 0 if missing
         input_for_prediction = input_for_prediction.reindex(columns=feature_cols, fill_value=0)
 
 
         predicted_sales = sales_model.predict(input_for_prediction)[0]
         predicted_customers = customers_model.predict(input_for_prediction)[0]
 
-        # Calculate approximate 95% Confidence Intervals using quantiles of individual tree predictions
         sales_predictions_per_tree = np.array([tree.predict(input_for_prediction)[0] for tree in sales_model.estimators_])
         customers_predictions_per_tree = np.array([tree.predict(input_for_prediction)[0] for tree in customers_model.estimators_])
         
@@ -473,19 +482,16 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
             'Forecasted Customers': max(0, round(predicted_customers)),
             'Customers Lower Bound (95%)': max(0, round(customers_lower)),
             'Customers Upper Bound (95%)': max(0, round(customers_upper)),
-            'Weather': current_weather_input_str # Store the actual string for display
+            'Weather': current_weather_input_str 
         })
 
-        # Update lag values for the next iteration (chained prediction)
+        # Append the newly forecasted values to the buffer for future lag lookups
+        combined_data_buffer.append({'Date': current_forecast_date, 'Sales': predicted_sales, 'Customers': predicted_customers})
+
+        # Update lag-1 values for the next iteration
         current_sales_lag1 = predicted_sales
         current_customers_lag1 = predicted_customers
         
-        # Update the 7-day lag list by removing the oldest and adding the newest prediction
-        last_7_sales.pop(0)
-        last_7_sales.append(predicted_sales)
-        last_7_customers.pop(0)
-        last_7_customers.append(predicted_customers)
-
     return pd.DataFrame(forecast_results)
 
 def generate_prophet_forecast(sales_df, events_df, sales_model, customers_model, future_weather_inputs, num_days=10):
