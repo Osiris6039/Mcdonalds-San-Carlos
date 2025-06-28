@@ -878,9 +878,10 @@ with tab3:
             st.warning("No sales data available to calculate accuracy.")
         elif st.session_state.sales_data.shape[0] < 2:
             st.warning("Please enter at least 2 days of sales data to calculate accuracy.")
+        # Consolidated model readiness check here
         elif st.session_state.sales_model is None or st.session_state.customers_model is None:
              st.warning("AI models are not ready. Please ensure you have sufficient data and the models are trained first.")
-        else:
+        else: # Models are ready, proceed with accuracy calculation
             with st.spinner(f"Calculating accuracy using {st.session_state.model_type}... This may take a moment."):
                 if st.session_state.model_type == "RandomForest":
                     X_hist, y_sales_hist, y_customers_hist, _ = preprocess_rf_data(st.session_state.sales_data, st.session_state.events_data)
@@ -912,16 +913,18 @@ with tab3:
 
                         # --- Feature Importance Visualization for RandomForest ---
                         st.subheader("RandomForest Feature Importance")
-                        if st.session_state.model_type == "RandomForest" and st.session_state.sales_model is not None:
+                        # Ensure models are trained and feature columns are available before plotting importance
+                        if st.session_state.sales_model is not None and st.session_state.customers_model is not None and 'rf_feature_columns' in st.session_state:
                             feature_importances = pd.DataFrame({
                                 'Feature': st.session_state['rf_feature_columns'],
                                 'Sales Importance': st.session_state.sales_model.feature_importances_,
                                 'Customers Importance': st.session_state.customers_model.feature_importances_
                             })
+                            # Sort by sales importance for consistent initial display, can be enhanced to allow user sorting
                             feature_importances = feature_importances.sort_values(by='Sales Importance', ascending=False)
 
                             fig_fi_sales, ax_fi_sales = plt.subplots(figsize=(10, 6))
-                            sns.barplot(x='Sales Importance', y='Feature', data=feature_importances.head(10), ax=ax_fi_sales)
+                            sns.barplot(x='Sales Importance', y='Feature', data=feature_importances.head(10), ax=ax_fi_sales, palette='viridis') # Added palette
                             ax_fi_sales.set_title("Top 10 Most Important Features for Sales Forecast")
                             ax_fi_sales.set_xlabel("Importance (Relative)")
                             ax_fi_sales.set_ylabel("Feature")
@@ -929,16 +932,17 @@ with tab3:
                             st.pyplot(fig_fi_sales)
 
                             fig_fi_customers, ax_fi_customers = plt.subplots(figsize=(10, 6))
-                            sns.barplot(x='Customers Importance', y='Feature', data=feature_importances.sort_values(by='Customers Importance', ascending=False).head(10), ax=ax_fi_customers)
+                            sns.barplot(x='Customers Importance', y='Feature', data=feature_importances.sort_values(by='Customers Importance', ascending=False).head(10), ax=ax_fi_customers, palette='plasma') # Added palette
                             ax_fi_customers.set_title("Top 10 Most Important Features for Customer Forecast")
                             ax_fi_customers.set_xlabel("Importance (Relative)")
                             ax_fi_customers.set_ylabel("Feature")
                             plt.tight_layout()
                             st.pyplot(fig_fi_customers)
                         else:
-                            st.info("Feature importance is available for RandomForest models after training.")
+                            st.info("Feature importance will be displayed here after the RandomForest models are trained with sufficient data.")
                         # --- End Feature Importance ---
 
+                        # Plotting Actual vs. Predicted for Sales
                         fig_acc_sales, ax_acc_sales = plt.subplots(figsize=(12, 6))
                         sns.lineplot(data=accuracy_plot_df, x='Date', y='Actual Sales', label='Actual Sales', marker='o', ax=ax_acc_sales)
                         sns.lineplot(data=accuracy_plot_df, x='Date', y='Predicted Sales', label='Predicted Sales', marker='x', linestyle='--', ax=ax_acc_sales)
@@ -951,6 +955,7 @@ with tab3:
                         plt.tight_layout()
                         st.pyplot(fig_acc_sales)
 
+                        # Plotting Actual vs. Predicted for Customers
                         fig_acc_customers, ax_acc_customers = plt.subplots(figsize=(12, 6))
                         sns.lineplot(data=accuracy_plot_df, x='Date', y='Actual Customers', label='Actual Customers', marker='o', ax=ax_acc_customers)
                         sns.lineplot(data=accuracy_plot_df, x='Date', y='Predicted Customers', label='Predicted Customers', marker='x', linestyle='--', ax=ax_acc_customers)
@@ -1021,8 +1026,8 @@ with tab3:
 
                             except Exception as e:
                                 st.error(f"Error during Prophet cross-validation: {e}. Ensure sufficient data and model setup.")
-        else:
-            st.error("AI models are not ready. Please ensure you have sufficient data and the models are trained first.")
-            
+        # Removed the problematic else from here:
+        # else:
+        #     st.error("AI models are not ready. Please ensure you have sufficient data and the models are trained first.")
     else:
         st.info("Click 'Calculate Accuracy' to see how well the AI performs on past data.")
