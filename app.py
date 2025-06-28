@@ -769,7 +769,7 @@ with tab1:
                     if update_button_monthly:
                         st.session_state.sales_data.loc[
                             st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str_monthly),
-                            ['Sales', 'Customers', 'Add_on_Sales', 'Weather']
+                            ['Sales', 'Customers', 'Add_on_sales', 'Weather']
                         ] = [edit_sales_monthly, edit_customers_monthly, edit_add_on_sales_monthly, edit_weather_monthly]
                         save_sales_data_and_clear_cache(st.session_state.sales_data)
                         st.session_state.sales_data = load_sales_data_cached()
@@ -931,8 +931,7 @@ with tab3:
                             'Date': st.session_state.sales_data['Date'].iloc[X_hist.index],
                             'Actual Sales': y_sales_hist,
                             'Predicted Sales': predicted_sales_hist,
-                            'Actual Customers': y_customers_hist,
-                            'Predicted Customers': predicted_customers_hist
+                            'Actual Customers': predicted_customers_hist
                         })
 
                         mae_sales = mean_absolute_error(accuracy_plot_df['Actual Sales'], accuracy_plot_df['Predicted Sales'])
