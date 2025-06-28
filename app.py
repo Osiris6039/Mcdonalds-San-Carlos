@@ -511,11 +511,7 @@ def create_sample_data_if_empty_and_initialize():
     if sales_df_check.empty:
         st.info("Creating sample sales data for a quick start...")
         # Create data up to yesterday, ensuring there's no overlap with today's potential input
-        # Also, use a fixed start date for sample data that's old enough to not overlap with current inputs easily
-        current_date = datetime.now()
-        start_date = current_date - timedelta(days=90) # Start 90 days ago
-        dates = pd.to_datetime(pd.date_range(start=start_date, end=current_date - timedelta(days=1), freq='D'))
-        
+        dates = pd.to_datetime(pd.date_range(end=datetime.now() - timedelta(days=1), periods=60, freq='D'))
         np.random.seed(42)
         sales = np.random.randint(500, 1500, size=len(dates)) + np.random.randn(len(dates)) * 50
         customers = np.random.randint(50, 200, size=len(dates)) + np.random.randn(len(dates)) * 10
@@ -695,44 +691,45 @@ with tab1:
                 'Weather': weather
             }])
 
-            # Filter out the old record for the same date if it exists
-            # Then concatenate the new record. This ensures update-or-add behavior.
-            st.session_state.sales_data = st.session_state.sales_data[
-                st.session_state.sales_data['Date'] != input_date_dt
+            # Fetch the current sales data from session state
+            current_sales_data_in_session = st.session_state.sales_data.copy()
+
+            # Remove any existing record for the input_date_dt from the current data
+            filtered_sales_data = current_sales_data_in_session[
+                current_sales_data_in_session['Date'] != input_date_dt
             ]
-            st.session_state.sales_data = pd.concat(
-                [st.session_state.sales_data, new_input_record_df], ignore_index=True
-            )
             
+            # Concatenate the filtered data with the new input record
+            updated_sales_data = pd.concat(
+                [filtered_sales_data, new_input_record_df], ignore_index=True
+            )
+
+            # Ensure the combined DataFrame is correctly sorted and deduplicated by date before saving
+            # This is already handled by save_sales_data_and_clear_cache but doing it explicitly here too
+            # before updating session state for immediate display consistency.
+            updated_sales_data = updated_sales_data.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
+
+            st.session_state.sales_data = updated_sales_data # Update session state first
+
             st.success(f"Record for {input_date.strftime('%Y-%m-%d')} updated/added successfully! AI will retrain.")
             
             # After adding or updating, always save to disk, clear cache, and force rerun
-            # This save/load cycle ensures the underlying CSV is updated AND session state is re-synced from it
-            save_sales_data_and_clear_cache(st.session_state.sales_data) 
-            st.session_state.sales_data = load_sales_data_cached() # Explicitly reload into session state
-            
+            save_sales_data_and_clear_cache(st.session_state.sales_data) # Save the now clean session state data
+            st.session_state.sales_data = load_sales_data_cached() # Re-load from disk to ensure freshest data
             st.session_state.sales_model = None # Force model retraining
             st.session_state.customers_model = None # Force model retraining
             st.experimental_rerun() # Trigger a full rerun to update all components
 
     st.subheader("Most Recently Inputted/Updated Data (Last 7 Unique Days)")
-    # This section now exclusively uses the sorted and deduplicated session state data.
-    # The `load_sales_data_cached` and the logic in `add_record_button`
-    # should ensure st.session_state.sales_data is clean before it gets here.
+    # This section now exclusively uses the sorted and deduplicated session state data
     if not st.session_state.sales_data.empty:
-        # Get the current date to determine "recent" inputs, avoiding confusion with old sample data
-        current_date = datetime.now().date()
-        # Filter for data that is from the current day or later (if future input was allowed)
-        # and then take the latest 7 unique entries.
-        recent_inputs_df = st.session_state.sales_data[
-            st.session_state.sales_data['Date'].dt.date >= current_date
-        ].sort_values('Date', ascending=False).drop_duplicates(subset=['Date'], keep='first').head(7).copy()
-
-        if not recent_inputs_df.empty:
-            recent_inputs_df['Date'] = recent_inputs_df['Date'].dt.strftime('%Y-%m-%d')
-            st.dataframe(recent_inputs_df, use_container_width=True)
-        else:
-            st.info("No data manually entered or updated for today or future dates yet.")
+        # Filter for recent inputs by checking if they are not part of the initial sample data range
+        # For simplicity, let's consider data from 'today' onwards as 'inputted' or explicitly updated.
+        # This is a simplification; a more robust solution would track actual input dates.
+        # For now, let's just show the latest 7 *unique* records that exist in the (deduplicated) data.
+        display_data = st.session_state.sales_data.sort_values('Date', ascending=False).head(7).copy()
+        display_data['Date'] = display_data['Date'].dt.strftime('%Y-%m-%d')
+        st.dataframe(display_data, use_container_width=True)
         
         st.subheader("Edit/Delete Records (Select from all records)")
         # This multiselect will always reflect the full, deduplicated dataset.
