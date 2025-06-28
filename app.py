@@ -43,55 +43,45 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 def initialize_firebase_client():
     """Initializes Firebase Admin SDK and authenticates user."""
     
-    # Use getattr with defaults for robustness in local testing
+    # Access Firebase service account from Streamlit secrets
+    firebase_config = st.secrets.get('firebase_service_account')
+    
+    # Use getattr for app_id and initial_auth_token as they are still runtime injections
     app_id = getattr(st, '__app_id', 'default-app-id')
-    firebase_config_str = getattr(st, '__firebase_config', '{}')
     initial_auth_token = getattr(st, '__initial_auth_token', None)
 
-    # --- DEBUGGING: Print the raw injected values ---
-    st.info(f"DEBUG: __app_id raw value: {app_id}")
-    st.info(f"DEBUG: __firebase_config raw value (first 100 chars): {firebase_config_str[:100]}...")
-    st.info(f"DEBUG: __initial_auth_token raw value (first 100 chars): {initial_auth_token[:100] if initial_auth_token else 'None'}...")
-    # --- END DEBUGGING ---
-
-    firebase_config = {}
-    try:
-        if firebase_config_str and firebase_config_str != '{}':
-            firebase_config = json.loads(firebase_config_str)
-        else:
-            st.error("Firebase configuration string is empty or default. Cannot initialize Firebase.")
-            return None, None, None
-    except json.JSONDecodeError as e:
-        st.error(f"Invalid Firebase configuration JSON: {e}")
-        return None, None, None
-
-    # This check might be redundant if the above `else` block catches it
-    if not firebase_config or not firebase_config.get('project_id'):
-        st.error("Firebase configuration object is empty or missing 'project_id'. Cannot initialize Firebase.")
+    if not firebase_config:
+        st.error("Firebase service account configuration not found in Streamlit secrets.")
+        st.info("Please go to your Streamlit Cloud app settings -> Secrets, and add your Firebase service account JSON under the key 'firebase_service_account'.")
         return None, None, None
 
     try:
         # Check if Firebase app is already initialized
         if not firebase_admin._apps:
             cred = credentials.Certificate(firebase_config)
-            initialize_app(cred, {'projectId': firebase_config['project_id']})
+            initialize_app(cred) # No need for projectId here, it's in the creds
         
         db = firestore.client()
         
         # Authenticate
         current_user_id = None
         if initial_auth_token:
-            decoded_token = auth.verify_id_token(initial_auth_token)
-            current_user_id = decoded_token['uid']
-            st.success(f"Authenticated with Firebase. User ID: {current_user_id}")
+            try:
+                decoded_token = auth.verify_id_token(initial_auth_token)
+                current_user_id = decoded_token['uid']
+                st.sidebar.success(f"Authenticated with Firebase. User ID: `{current_user_id}`") # Moved to sidebar for less clutter
+            except Exception as auth_e:
+                st.sidebar.error(f"Authentication token verification failed: {auth_e}")
+                st.sidebar.info("Falling back to anonymous user ID.")
+                current_user_id = "anonymous_user_id"
         else:
-            st.warning("No initial auth token found. Proceeding without specific user authentication. Data might not be private per user.")
+            st.sidebar.warning("No initial auth token found. Using anonymous user ID. Data might not be private per user in collaborative contexts.")
             current_user_id = "anonymous_user_id" # Fallback if no token (less secure for prod)
 
         return db, current_user_id, app_id
     except Exception as e:
         st.error(f"Error initializing Firebase or authenticating: {e}")
-        st.info("Please ensure your Firebase project is set up correctly and the service account key is valid within the injected configuration.")
+        st.info("Please ensure your Firebase service account key is valid and correctly formatted in Streamlit secrets.")
         return None, None, None
 
 db, USER_ID, APP_ID = initialize_firebase_client()
