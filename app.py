@@ -117,7 +117,8 @@ def preprocess_rf_data(df_sales, df_events):
     df['day_of_year'] = df['Date'].dt.dayofyear
     df['month'] = df['Date'].dt.month
     df['year'] = df['Date'].dt.year
-    df['week_of_year'] = df['Date'].dt.isocalendar().week.astype(int) if hasattr(df['Date'].dt, 'isocalendar') else df['Date'].dt.isocalendar().week.astype(int) # Defensive check for older pandas versions
+    # Robust way to get week of year from isocalendar
+    df['week_of_year'] = df['Date'].dt.isocalendar().week.astype(int) 
     df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
 
     # Weather one-hot encoding
@@ -379,7 +380,9 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
         return pd.DataFrame()
 
     # Ensure consistent Timestamp type for all date operations
+    # Convert datetime.now() to pd.Timestamp immediately for consistency
     today = pd.Timestamp(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
+    # Generate forecast_dates as a list of pd.Timestamp objects
     forecast_dates = [today + pd.Timedelta(days=i) for i in range(1, num_days + 1)]
 
     historical_data_for_lags = sales_df.copy()
@@ -406,22 +409,24 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
 
 
     for i in range(num_days):
-        # IMPORTANT FIX: Explicitly ensure forecast_date is a Timestamp within the loop
-        forecast_date = pd.Timestamp(forecast_dates[i])
+        # Retrieve the date for the current iteration. It's already a pd.Timestamp from forecast_dates list.
+        current_forecast_date = forecast_dates[i]
         
-        current_weather_input = next((item['weather'] for item in future_weather_inputs if item['date'] == forecast_date.strftime('%Y-%m-%d')), 'Sunny')
+        current_weather_input = next((item['weather'] for item in future_weather_inputs if item['date'] == current_forecast_date.strftime('%Y-%m-%d')), 'Sunny')
 
+        # Directly access attributes from current_forecast_date (which is a pd.Timestamp)
         current_features_data = {
-            'day_of_week': forecast_date.weekday(),
-            'day_of_year': forecast_date.dayofyear,
-            'month': forecast_date.month,
-            'year': forecast_date.year,
-            'week_of_year': forecast_date.isocalendar().week.astype(int), # This should now work reliably
-            'is_weekend': int(forecast_date.weekday() in [5, 6]),
+            'day_of_week': current_forecast_date.weekday(),
+            'day_of_year': current_forecast_date.dayofyear,
+            'month': current_forecast_date.month,
+            'year': current_forecast_date.year,
+            # Access week directly from isocalendar tuple to avoid Series issues
+            'week_of_year': current_forecast_date.isocalendar()[1], 
+            'is_weekend': int(current_forecast_date.weekday() in [5, 6]),
             'Sales_Lag1': current_sales_lag1,
             'Customers_Lag1': current_customers_lag1,
-            'Sales_Lag7': last_7_sales[i], # Use the appropriate lagged value for this forecast day
-            'Customers_Lag7': last_7_customers[i], # Use the appropriate lagged value for this forecast day
+            'Sales_Lag7': last_7_sales[i], 
+            'Customers_Lag7': last_7_customers[i], 
             'is_event': 0,
             'event_impact_score': 0.0
         }
@@ -431,7 +436,8 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
             current_features_data[f'weather_{cond}'] = (current_weather_input == cond).astype(int)
 
         if not events_df.empty:
-            matching_event = events_df[events_df['Event_Date'] == forecast_date]
+            # When merging/checking events, explicitly convert to datetime for robust comparison
+            matching_event = events_df[events_df['Event_Date'] == current_forecast_date.to_pydatetime().date()] # Compare date part only
             if not matching_event.empty:
                 current_features_data['is_event'] = 1
                 impact_map = {'Low': 0.1, 'Medium': 0.5, 'High': 1.0}
@@ -457,7 +463,7 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
         customers_upper = np.percentile(customers_predictions_per_tree, 97.5)
 
         forecast_results.append({
-            'Date': forecast_date.strftime('%Y-%m-%d'),
+            'Date': current_forecast_date.strftime('%Y-%m-%d'),
             'Forecasted Sales': max(0, round(predicted_sales, 2)),
             'Sales Lower Bound (95%)': max(0, round(sales_lower, 2)),
             'Sales Upper Bound (95%)': max(0, round(sales_upper, 2)),
