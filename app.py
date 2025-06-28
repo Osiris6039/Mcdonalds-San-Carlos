@@ -13,14 +13,18 @@ from prophet.diagnostics import cross_validation, performance_metrics
 from prophet.plot import plot_cross_validation_metric
 import logging
 
+# Firebase Imports
+from firebase_admin import credentials, initialize_app
+from firebase_admin import firestore
+from firebase_admin import auth
+
 # Suppress Prophet logs to keep Streamlit output clean
 logging.getLogger('prophet').setLevel(logging.WARNING)
+# Suppress Firebase Admin SDK default logs
+logging.getLogger('firebase_admin').setLevel(logging.WARNING)
 
-# --- Configuration Constants ---
-DATA_DIR = "data"
+# --- Configuration Constants (Directories no longer strictly needed for data persistence, but models still use them) ---
 MODELS_DIR = "models"
-SALES_DATA_PATH = os.path.join(DATA_DIR, "sales_data.csv")
-EVENTS_DATA_PATH = os.path.join(DATA_DIR, "events_data.csv")
 
 # Paths for saved machine learning models
 SALES_RF_MODEL_PATH = os.path.join(MODELS_DIR, "sales_rf_model.pkl")
@@ -28,74 +32,194 @@ CUSTOMERS_RF_MODEL_PATH = os.path.join(MODELS_DIR, "customers_rf_model.pkl")
 SALES_PROPHET_MODEL_PATH = os.path.join(MODELS_DIR, "sales_prophet_model.pkl")
 CUSTOMERS_PROPHET_MODEL_PATH = os.path.join(MODELS_DIR, "customers_prophet_model.pkl")
 
-# Ensure necessary directories exist at the start of the application
-os.makedirs(DATA_DIR, exist_ok=True)
+# Ensure necessary directories exist for models
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-# --- Data Loading and Saving Functions ---
+
+# --- Firebase Initialization and Authentication ---
+@st.cache_resource(ttl=3600) # Cache the Firebase app initialization
+def initialize_firebase_client():
+    """Initializes Firebase Admin SDK and authenticates user."""
+    # These variables are injected by the Canvas environment
+    app_id = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    firebase_config = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+    initial_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+    if not firebase_config:
+        st.error("Firebase configuration not found. Cannot initialize Firebase.")
+        return None, None, None
+
+    try:
+        # Check if Firebase app is already initialized
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(firebase_config)
+            initialize_app(cred, {'projectId': firebase_config['project_id']})
+        
+        db = firestore.client()
+        
+        # Authenticate
+        current_user_id = None
+        if initial_auth_token:
+            decoded_token = auth.verify_id_token(initial_auth_token)
+            current_user_id = decoded_token['uid']
+            st.success(f"Authenticated with Firebase. User ID: {current_user_id}")
+        else:
+            st.warning("No initial auth token found. Proceeding without specific user authentication. Data might not be private per user.")
+            # For Canvas, initial_auth_token should usually be present. 
+            # For local testing without special setup, you might need a different auth method or public rules.
+            # Here, we'll use a placeholder if no token is present, implying public-like access (not ideal for real privacy).
+            current_user_id = "anonymous_user_id" # Fallback if no token (less secure for prod)
+
+        return db, current_user_id, app_id
+    except Exception as e:
+        st.error(f"Error initializing Firebase or authenticating: {e}")
+        st.info("Please ensure your Firebase project is set up correctly and the service account key is valid.")
+        return None, None, None
+
+db, USER_ID, APP_ID = initialize_firebase_client()
+
+# --- Firestore Data Management Functions ---
+def get_firestore_sales_collection_ref(db, user_id, app_id):
+    return db.collection('artifacts').document(app_id).collection('users').document(user_id).collection('sales_data')
+
+def get_firestore_events_collection_ref(db, user_id, app_id):
+    return db.collection('artifacts').document(app_id).collection('users').document(user_id).collection('events_data')
+
 @st.cache_data(show_spinner=False)
-def load_sales_data_cached():
-    """
-    Loads sales data from 'sales_data.csv'.
-    If the file doesn't exist or is empty, an empty DataFrame is created and saved.
-    Ensures 'Date' column is datetime, and data is sorted and deduplicated by date.
-    Explicitly converts Sales, Customers, Add_on_Sales to numeric.
-    This function is cached by Streamlit.
-    """
-    if not os.path.exists(SALES_DATA_PATH) or os.path.getsize(SALES_DATA_PATH) == 0:
-        df = pd.DataFrame(columns=['Date', 'Sales', 'Customers', 'Add_on_Sales', 'Weather'])
-        df['Date'] = pd.to_datetime(df['Date']) # Ensure column type for future data
-        df.to_csv(SALES_DATA_PATH, index=False)
-    else:
-        df = pd.read_csv(SALES_DATA_PATH)
-        df['Date'] = pd.to_datetime(df['Date'], errors='coerce') # Coerce invalid dates to NaT
-        df = df.dropna(subset=['Date']) # Drop rows where Date conversion failed
+def load_sales_data_from_firestore(db, user_id, app_id):
+    """Loads sales data from Firestore into a pandas DataFrame."""
+    if not db or not user_id or not app_id:
+        st.warning("Firestore is not initialized. Cannot load sales data.")
+        return pd.DataFrame()
 
-    # Explicitly convert numeric columns after loading
-    df['Sales'] = pd.to_numeric(df['Sales'], errors='coerce').fillna(0)
-    df['Customers'] = pd.to_numeric(df['Customers'], errors='coerce').fillna(0).astype(int)
-    df['Add_on_Sales'] = pd.to_numeric(df['Add_on_Sales'], errors='coerce').fillna(0)
-
-    # Ensure loaded data is always sorted by Date and unique (keeping the latest entry for any duplicate date)
-    return df.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
-
-def save_sales_data_and_clear_cache(df):
-    """
-    Saves the given DataFrame to 'sales_data.csv' and clears the cache
-    for `load_sales_data_cached` to force a fresh reload next time.
-    """
-    # Ensure the DataFrame is deduplicated before saving
-    df = df.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
-    df.to_csv(SALES_DATA_PATH, index=False)
-    st.cache_data.clear() # Clear cache for load_sales_data_cached()
+    try:
+        sales_collection = get_firestore_sales_collection_ref(db, user_id, app_id)
+        docs = sales_collection.stream()
+        
+        data = []
+        for doc in docs:
+            doc_data = doc.to_dict()
+            if 'Date' in doc_data and 'Sales' in doc_data and 'Customers' in doc_data:
+                # Firestore Timestamp to datetime
+                doc_data['Date'] = doc_data['Date'].to_datetime()
+                data.append(doc_data)
+        
+        df = pd.DataFrame(data)
+        if not df.empty:
+            df['Date'] = pd.to_datetime(df['Date'])
+            df['Sales'] = pd.to_numeric(df['Sales'], errors='coerce').fillna(0)
+            df['Customers'] = pd.to_numeric(df['Customers'], errors='coerce').fillna(0).astype(int)
+            df['Add_on_Sales'] = pd.to_numeric(df['Add_on_Sales'], errors='coerce').fillna(0)
+            df = df.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
+        return df
+    except Exception as e:
+        st.error(f"Error loading sales data from Firestore: {e}")
+        return pd.DataFrame()
 
 @st.cache_data(show_spinner=False)
-def load_events_data_cached():
-    """
-    Loads event data from 'events_data.csv'.
-    If the file doesn't exist or is empty, an empty DataFrame is created and saved.
-    Ensures 'Event_Date' column is datetime, and data is sorted and deduplicated by event date.
-    This function is cached by Streamlit.
-    """
-    if not os.path.exists(EVENTS_DATA_PATH) or os.path.getsize(EVENTS_DATA_PATH) == 0:
-        df = pd.DataFrame(columns=['Event_Date', 'Event_Name', 'Impact'])
-        df['Event_Date'] = pd.to_datetime(df['Event_Date'])
-        df.to_csv(EVENTS_DATA_PATH, index=False)
-    else:
-        df = pd.read_csv(EVENTS_DATA_PATH)
-        df['Event_Date'] = pd.to_datetime(df['Event_Date'], errors='coerce') # Coerce invalid dates
-        df = df.dropna(subset=['Event_Date']) # Drop rows where Event_Date conversion failed
+def load_events_data_from_firestore(db, user_id, app_id):
+    """Loads event data from Firestore into a pandas DataFrame."""
+    if not db or not user_id or not app_id:
+        st.warning("Firestore is not initialized. Cannot load event data.")
+        return pd.DataFrame()
 
-    # Ensure loaded data is always sorted by Event_Date and unique
-    return df.sort_values('Event_Date').drop_duplicates(subset=['Event_Date'], keep='last').reset_index(drop=True)
+    try:
+        events_collection = get_firestore_events_collection_ref(db, user_id, app_id)
+        docs = events_collection.stream()
+        
+        data = []
+        for doc in docs:
+            doc_data = doc.to_dict()
+            if 'Event_Date' in doc_data and 'Event_Name' in doc_data:
+                # Firestore Timestamp to datetime
+                doc_data['Event_Date'] = doc_data['Event_Date'].to_datetime()
+                data.append(doc_data)
+        
+        df = pd.DataFrame(data)
+        if not df.empty:
+            df['Event_Date'] = pd.to_datetime(df['Event_Date'])
+            df = df.sort_values('Event_Date').drop_duplicates(subset=['Event_Date'], keep='last').reset_index(drop=True)
+        return df
+    except Exception as e:
+        st.error(f"Error loading events data from Firestore: {e}")
+        return pd.DataFrame()
 
-def save_events_data_and_clear_cache(df):
-    """
-    Saves the given DataFrame to 'events_data.csv' and clears the cache
-    for `load_events_data_cached` to force a fresh reload.
-    """
-    df.sort_values('Event_Date').drop_duplicates(subset=['Event_Date'], keep='last').to_csv(EVENTS_DATA_PATH, index=False)
-    st.cache_data.clear() # Clear cache for load_events_data_cached()
+def save_sales_record_to_firestore(db, user_id, app_id, record_df):
+    """Saves or updates a single sales record in Firestore."""
+    if db is None or user_id is None or app_id is None:
+        st.error("Firestore is not initialized. Cannot save data.")
+        return False
+    
+    try:
+        sales_collection = get_firestore_sales_collection_ref(db, user_id, app_id)
+        # Use the date as the document ID for easy lookup and update
+        doc_id = record_df['Date'].strftime('%Y-%m-%d')
+        
+        # Convert pandas Timestamp to Firestore Timestamp for saving
+        record_data = record_df.to_dict(orient='records')[0] # Get dict from single-row DataFrame
+        record_data['Date'] = firestore.SERVER_TIMESTAMP # This will set the server timestamp on creation/update
+        # You might also store the original date as a string if exact match is needed for filtering later
+        record_data['Original_Date_Str'] = doc_id 
+
+        sales_collection.document(doc_id).set(record_data, merge=True) # merge=True updates existing fields and adds new ones
+        st.cache_data.clear() # Clear cache to force reload
+        return True
+    except Exception as e:
+        st.error(f"Error saving sales record to Firestore: {e}")
+        return False
+
+def delete_sales_record_from_firestore(db, user_id, app_id, date_str):
+    """Deletes a single sales record from Firestore by date string."""
+    if db is None or user_id is None or app_id is None:
+        st.error("Firestore is not initialized. Cannot delete data.")
+        return False
+    
+    try:
+        sales_collection = get_firestore_sales_collection_ref(db, user_id, app_id)
+        sales_collection.document(date_str).delete()
+        st.cache_data.clear() # Clear cache to force reload
+        return True
+    except Exception as e:
+        st.error(f"Error deleting sales record from Firestore: {e}")
+        return False
+
+def save_event_record_to_firestore(db, user_id, app_id, record_df):
+    """Saves or updates a single event record in Firestore."""
+    if db is None or user_id is None or app_id is None:
+        st.error("Firestore is not initialized. Cannot save data.")
+        return False
+    
+    try:
+        events_collection = get_firestore_events_collection_ref(db, user_id, app_id)
+        # Use event_date as doc_id for events too
+        doc_id = record_df['Event_Date'].strftime('%Y-%m-%d')
+        
+        record_data = record_df.to_dict(orient='records')[0] # Get dict from single-row DataFrame
+        record_data['Event_Date'] = firestore.SERVER_TIMESTAMP # Use server timestamp or convert explicitly if exact time matters
+        record_data['Original_Event_Date_Str'] = doc_id # Store original date as string
+
+        events_collection.document(doc_id).set(record_data, merge=True)
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"Error saving event record to Firestore: {e}")
+        return False
+
+def delete_event_record_from_firestore(db, user_id, app_id, date_str):
+    """Deletes a single event record from Firestore by date string."""
+    if db is None or user_id is None or app_id is None:
+        st.error("Firestore is not initialized. Cannot delete data.")
+        return False
+    
+    try:
+        events_collection = get_firestore_events_collection_ref(db, user_id, app_id)
+        events_collection.document(date_str).delete()
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"Error deleting event record from Firestore: {e}")
+        return False
+
 
 # --- Preprocessing for RandomForestRegressor ---
 def preprocess_rf_data(df_sales, df_events):
@@ -137,11 +261,17 @@ def preprocess_rf_data(df_sales, df_events):
         impact_map = {'Low': 0.1, 'Medium': 0.5, 'High': 1.0}
         df_events_copy['Impact_Score'] = df_events_copy['Impact'].map(impact_map).fillna(0)
 
-        merged = pd.merge(df[['Date']], df_events_copy[['Event_Date', 'Impact_Score']],
+        # Merge based on date only
+        merged = pd.merge(df[['Date']].drop_duplicates(), df_events_copy[['Event_Date', 'Impact_Score']].drop_duplicates(),
                           left_on='Date', right_on='Event_Date', how='left')
         
-        df['is_event'] = merged['Event_Date'].notna().astype(int)
-        df['event_impact_score'] = merged['Impact_Score'].fillna(0)
+        # Re-merge back to original df to ensure alignment
+        df = pd.merge(df, merged[['Date', 'Impact_Score']].rename(columns={'Impact_Score': 'event_impact_score_merged'}),
+                      on='Date', how='left')
+        df['is_event'] = (~df['event_impact_score_merged'].isna()).astype(int)
+        df['event_impact_score'] = df['event_impact_score_merged'].fillna(0)
+        df = df.drop(columns=['event_impact_score_merged'])
+
 
     # Lag features - fillna(0) for initial lags if not enough historical data
     df['Sales_Lag1'] = df['Sales'].shift(1).fillna(0)
@@ -301,8 +431,13 @@ def load_or_train_models_cached(model_type, n_estimators_rf=100):
     Loads pre-trained models from disk if they exist, otherwise trains them.
     Models are cached to avoid retraining on every Streamlit rerun if data hasn't changed.
     """
-    sales_df_current = st.session_state.sales_data # Use session state data
-    events_df_current = st.session_state.events_data # Use session state data
+    # Ensure Firestore is initialized before proceeding
+    if db is None or USER_ID is None or APP_ID is None:
+        st.warning("Firebase not fully initialized. Skipping model loading/training.")
+        return None, None
+
+    sales_df_current = load_sales_data_from_firestore(db, USER_ID, APP_ID) # Load from Firestore
+    events_df_current = load_events_data_from_firestore(db, USER_ID, APP_ID) # Load from Firestore
 
     sales_model = None
     customers_model = None
@@ -382,9 +517,6 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
     today = pd.Timestamp(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
     forecast_dates = [today + pd.Timedelta(days=i) for i in range(1, num_days + 1)]
 
-    # Combine historical and future forecasted data for lag lookups
-    # This buffer will hold {'Date': Timestamp, 'Sales': float, 'Customers': int}
-    # Start with historical data
     combined_data_buffer = []
     if not sales_df.empty:
         for index, row in sales_df.iterrows():
@@ -394,43 +526,32 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
                 'Customers': row['Customers']
             })
     
-    # Sort the buffer by date to ensure chronological order for lag lookups
     combined_data_buffer.sort(key=lambda x: x['Date'])
 
     forecast_results = []
     
-    # Initialize lag-1 values for the first forecast day
     current_sales_lag1 = combined_data_buffer[-1]['Sales'] if combined_data_buffer else 0.0
     current_customers_lag1 = combined_data_buffer[-1]['Customers'] if combined_data_buffer else 0.0
 
-    # Average sales/customers from historical data for padding if lags go too far back
     avg_sales_history = sales_df['Sales'].mean() if not sales_df.empty else 0.0
     avg_customers_history = sales_df['Customers'].mean() if not sales_df.empty else 0.0
 
     for i in range(num_days):
         current_forecast_date = forecast_dates[i]
         
-        # Explicitly ensure current_weather_input is a string before comparison
         current_weather_input_str = str(next((item['weather'] for item in future_weather_inputs if item['date'] == current_forecast_date.strftime('%Y-%m-%d')), 'Sunny'))
 
-        # Calculate Sales_Lag7 and Customers_Lag7 by looking back in the combined_data_buffer
         lag7_date = current_forecast_date - pd.Timedelta(days=7)
         
-        lag7_sales_val = avg_sales_history # Default fallback
-        lag7_customers_val = avg_customers_history # Default fallback
+        lag7_sales_val = avg_sales_history 
+        lag7_customers_val = avg_customers_history 
 
-        # Search the buffer for the lag7_date
-        found_lag7 = False
         for entry in combined_data_buffer:
             if entry['Date'] == lag7_date:
                 lag7_sales_val = entry['Sales']
                 lag7_customers_val = entry['Customers']
-                found_lag7 = True
                 break
         
-        # If the exact date wasn't found, and it's before any data we have, use the average fallback.
-        # Otherwise, the default (avg_sales_history) will be used.
-
         current_features_data = {
             'day_of_week': current_forecast_date.weekday(),
             'day_of_year': current_forecast_date.dayofyear,
@@ -485,10 +606,8 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
             'Weather': current_weather_input_str 
         })
 
-        # Append the newly forecasted values to the buffer for future lag lookups
         combined_data_buffer.append({'Date': current_forecast_date, 'Sales': predicted_sales, 'Customers': predicted_customers})
 
-        # Update lag-1 values for the next iteration
         current_sales_lag1 = predicted_sales
         current_customers_lag1 = predicted_customers
         
@@ -507,11 +626,9 @@ def generate_prophet_forecast(sales_df, events_df, sales_model, customers_model,
 
     future_prophet_df = pd.DataFrame({'ds': forecast_dates})
     
-    # Use the mean of historical Add_on_Sales for future predictions, ensure it's numeric
     avg_add_on_sales = sales_df['Add_on_Sales'].mean() if not sales_df.empty else 0.0
     future_prophet_df['Add_on_Sales'] = avg_add_on_sales
 
-    # Prepare weather regressors for future forecast dates
     all_weather_conditions = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
     for cond in all_weather_conditions:
         col_name = f'weather_{cond}'
@@ -549,48 +666,67 @@ st.set_page_config(layout="wide", page_title="AI Sales & Customer Forecast App")
 st.title("🎯 AI Sales & Customer Forecast Analyst")
 st.markdown("Your 200 IQ analyst for daily sales and customer volume forecasting!")
 
-# --- Initialize Streamlit Session State ---
+# --- Initialize Streamlit Session State & Load Data ---
+# Ensure Firestore is initialized before trying to load data into session state
+if db is None or USER_ID is None or APP_ID is None:
+    st.info("Initializing Firebase... please wait.")
+    st.stop() # Stop execution until Firebase is ready
+
 if 'app_initialized' not in st.session_state:
-    st.session_state['sales_data'] = load_sales_data_cached()
-    st.session_state['events_data'] = load_events_data_cached()
+    st.session_state['sales_data'] = load_sales_data_from_firestore(db, USER_ID, APP_ID)
+    st.session_state['events_data'] = load_events_data_from_firestore(db, USER_ID, APP_ID)
     st.session_state['sales_model'] = None
     st.session_state['customers_model'] = None
     st.session_state['model_type'] = "RandomForest"
     st.session_state['rf_n_estimators'] = 100
     st.session_state['future_weather_inputs'] = []
     st.session_state['app_initialized'] = True
+    # Initial data load might trigger a rerun if there was no data before
 
-# --- Initial Sample Data Creation (Run once if files don't exist) ---
-def create_sample_data_if_empty_and_initialize():
-    """
-    Creates sample event data if file is empty or doesn't exist.
-    Sales data is NOT created automatically in this version.
-    """
-    events_df_check = load_events_data_cached()
+# Display User ID
+if USER_ID:
+    st.sidebar.write(f"**Current User ID:** `{USER_ID}`")
+else:
+    st.sidebar.warning("User ID not available. Data saving might be impacted.")
 
-    rerun_needed = False
-        
+# --- Initial Sample Data Creation for Events (still useful for new users) ---
+def create_sample_events_if_empty_and_initialize():
+    """
+    Creates sample event data in Firestore if the events collection is empty.
+    """
+    events_df_check = load_events_data_from_firestore(db, USER_ID, APP_ID)
+
     if events_df_check.empty:
-        st.info("Creating sample event data...")
-        sample_events_df = pd.DataFrame([
+        st.info("No events found in Firestore. Adding sample event data...")
+        sample_events = [
             {'Event_Date': pd.to_datetime('2024-06-20'), 'Event_Name': 'Annual Fair', 'Impact': 'High'},
             {'Event_Date': pd.to_datetime('2023-12-25'), 'Event_Name': 'Christmas Day', 'Impact': 'High'},
             {'Event_Date': pd.to_datetime('2024-03-15'), 'Event_Name': 'Spring Festival', 'Impact': 'Medium'},
             {'Event_Date': pd.to_datetime('2025-06-27'), 'Event_Name': 'Charter Day 2025 (Future)', 'Impact': 'High'},
             {'Event_Date': pd.to_datetime('2025-07-04'), 'Event_Name': 'Independence Day (Future)', 'Impact': 'Medium'},
             {'Event_Date': pd.to_datetime('2024-07-04'), 'Event_Name': 'Independence Day 2024', 'Impact': 'Medium'},
-        ])
-        save_events_data_and_clear_cache(sample_events_df)
-        st.session_state.events_data = load_events_data_cached()
-        rerun_needed = True
+        ]
+        success_count = 0
+        for event in sample_events:
+            # Firestore expects native datetime objects or Timestamps, not pandas Timestamps directly for dict conversion.
+            event_for_firestore = event.copy()
+            event_for_firestore['Event_Date'] = event_for_firestore['Event_Date'].to_pydatetime()
+            if save_event_record_to_firestore(db, USER_ID, APP_ID, pd.DataFrame([event_for_firestore])):
+                success_count += 1
         
-    if rerun_needed:
-        st.success("Sample event data created! Rerunning application to load models.")
-        st.experimental_rerun()
-
-if not st.session_state.get('ran_sample_data_init', False):
-    create_sample_data_if_empty_and_initialize()
-    st.session_state['ran_sample_data_init'] = True
+        if success_count == len(sample_events):
+            st.success("Sample event data added to Firestore! Rerunning application to load data.")
+            st.cache_data.clear() # Clear cache for event data loader
+            st.session_state.events_data = load_events_data_from_firestore(db, USER_ID, APP_ID) # Reload
+            st.experimental_rerun()
+        else:
+            st.error("Failed to add all sample event data to Firestore.")
+            
+if not st.session_state.get('ran_sample_event_init', False) and st.session_state.events_data.empty: # Check if events_data is actually empty
+    # Only run if db is initialized and there's no data
+    if db and USER_ID and APP_ID:
+        create_sample_events_if_empty_and_initialize()
+        st.session_state['ran_sample_event_init'] = True # Set flag only after attempting creation
 
 # --- Sidebar for Model Settings and Event Logger ---
 st.sidebar.header("🛠️ Model Settings")
@@ -629,20 +765,25 @@ with st.sidebar.form("event_input_form", clear_on_submit=True):
     add_event_button = st.form_submit_button("Add Event")
 
     if add_event_button:
-        new_event_df = pd.DataFrame([{
-            'Event_Date': pd.to_datetime(event_date),
-            'Event_Name': event_name,
-            'Impact': event_impact
-        }])
-        st.session_state.events_data = pd.concat([st.session_state.events_data, new_event_df], ignore_index=True)
-        save_events_data_and_clear_cache(st.session_state.events_data)
-        st.session_state.events_data = load_events_data_cached()
-        st.sidebar.success(f"Event '{event_name}' added! AI will retrain.")
-        st.session_state.sales_model = None
-        st.session_state.customers_model = None
-        st.experimental_rerun()
+        if db and USER_ID and APP_ID:
+            new_event_record = {
+                'Event_Date': pd.to_datetime(event_date).to_pydatetime(), # Convert to Python datetime
+                'Event_Name': event_name,
+                'Impact': event_impact
+            }
+            if save_event_record_to_firestore(db, USER_ID, APP_ID, pd.DataFrame([new_event_record])):
+                st.sidebar.success(f"Event '{event_name}' added! AI will retrain.")
+                st.session_state.events_data = load_events_data_from_firestore(db, USER_ID, APP_ID) # Reload
+                st.session_state.sales_model = None
+                st.session_state.customers_model = None
+                st.experimental_rerun()
+            else:
+                st.sidebar.error("Failed to add event to Firestore.")
+        else:
+            st.sidebar.warning("Firebase not initialized. Cannot add event.")
 
 st.sidebar.subheader("Logged Events")
+# Ensure events_data is a DataFrame before sorting
 if not st.session_state.events_data.empty:
     display_events_df = st.session_state.events_data.sort_values('Event_Date', ascending=False).copy()
     display_events_df['Event_Date'] = display_events_df['Event_Date'].dt.strftime('%Y-%m-%d')
@@ -655,16 +796,22 @@ if not st.session_state.events_data.empty:
     )
     if st.sidebar.button("Delete Selected Events", key='delete_event_btn'):
         if event_dates_to_delete:
-            dates_to_delete_dt = [datetime.strptime(d, '%Y-%m-%d').date() for d in event_dates_to_delete]
-            st.session_state.events_data = st.session_state.events_data[
-                ~st.session_state.events_data['Event_Date'].dt.date.isin(dates_to_delete_dt)
-            ].reset_index(drop=True)
-            save_events_data_and_clear_cache(st.session_state.events_data)
-            st.session_state.events_data = load_events_data_cached()
-            st.sidebar.success("Selected events deleted! AI will retrain.")
-            st.session_state.sales_model = None
-            st.session_state.customers_model = None
-            st.experimental_rerun()
+            if db and USER_ID and APP_ID:
+                all_deleted_successfully = True
+                for date_str in event_dates_to_delete:
+                    if not delete_event_record_from_firestore(db, USER_ID, APP_ID, date_str):
+                        all_deleted_successfully = False
+                        break
+                if all_deleted_successfully:
+                    st.sidebar.success("Selected events deleted! AI will retrain.")
+                    st.session_state.events_data = load_events_data_from_firestore(db, USER_ID, APP_ID) # Reload
+                    st.session_state.sales_model = None
+                    st.session_state.customers_model = None
+                    st.experimental_rerun()
+                else:
+                    st.sidebar.error("Failed to delete all selected events.")
+            else:
+                st.sidebar.warning("Firebase not initialized. Cannot delete events.")
         else:
             st.sidebar.warning("No events selected for deletion.")
 else:
@@ -709,42 +856,27 @@ with tab1:
         add_record_button = st.form_submit_button("Add Record")
 
         if add_record_button:
-            input_date_dt = pd.to_datetime(input_date)
-            
-            # Create a new record DataFrame for the input
-            new_input_record_df = pd.DataFrame([{
-                'Date': input_date_dt,
-                'Sales': sales,
-                'Customers': customers,
-                'Add_on_Sales': add_on_sales,
-                'Weather': weather
-            }])
-
-            # Filter out the old record for the same date if it exists
-            # Then concatenate the new record. This ensures update-or-add behavior.
-            st.session_state.sales_data = st.session_state.sales_data[
-                st.session_state.sales_data['Date'] != input_date_dt
-            ]
-            st.session_state.sales_data = pd.concat(
-                [st.session_state.sales_data, new_input_record_df], ignore_index=True
-            )
-            
-            st.success(f"Record for {input_date.strftime('%Y-%m-%d')} updated/added successfully! AI will retrain.")
-            
-            # After adding or updating, always save to disk, clear cache, and force rerun
-            # This save/load cycle ensures the underlying CSV is updated AND session state is re-synced from it
-            save_sales_data_and_clear_cache(st.session_state.sales_data) 
-            st.session_state.sales_data = load_sales_data_cached() # Explicitly reload into session state
-            
-            st.session_state.sales_model = None # Force model retraining
-            st.session_state.customers_model = None # Force model retraining
-            st.experimental_rerun() # Trigger a full rerun to update all components
+            if db and USER_ID and APP_ID:
+                new_input_record = {
+                    'Date': pd.to_datetime(input_date).to_pydatetime(), # Convert to Python datetime
+                    'Sales': sales,
+                    'Customers': customers,
+                    'Add_on_Sales': add_on_sales,
+                    'Weather': weather
+                }
+                if save_sales_record_to_firestore(db, USER_ID, APP_ID, pd.DataFrame([new_input_record])):
+                    st.success(f"Record for {input_date.strftime('%Y-%m-%d')} updated/added successfully! AI will retrain.")
+                    st.session_state.sales_data = load_sales_data_from_firestore(db, USER_ID, APP_ID) # Reload
+                    st.session_state.sales_model = None # Force model retraining
+                    st.session_state.customers_model = None # Force model retraining
+                    st.experimental_rerun() # Trigger a full rerun to update all components
+                else:
+                    st.error("Failed to add/update sales record to Firestore.")
+            else:
+                st.warning("Firebase not initialized. Cannot add record.")
 
     st.subheader("Most Recently Inputted/Updated Data (Last 7 Unique Days)")
-    # This section now explicitly ensures deduplication and displays only the latest 7 unique records.
-    # It will start empty if no data has been inputted.
     if not st.session_state.sales_data.empty:
-        # Sort by date, drop duplicates, and take the last 7
         display_data = st.session_state.sales_data.sort_values('Date', ascending=False).drop_duplicates(subset=['Date'], keep='first').head(7).copy()
         
         if not display_data.empty:
@@ -756,23 +888,18 @@ with tab1:
         st.info("No data manually entered or updated yet. Input new records above!")
         
 
-    # --- Browse All Records by Month (now includes Edit/Delete) ---
     st.subheader("Browse All Records by Month")
     if not st.session_state.sales_data.empty:
         df_all_sales = st.session_state.sales_data.copy()
         
-        # Ensure df_all_sales is deduplicated here as well for display consistency
         df_all_sales = df_all_sales.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
 
         df_all_sales['YearMonth'] = df_all_sales['Date'].dt.to_period('M')
 
-        # Get unique YearMonths for selection, sorted descending
         unique_year_months = sorted(df_all_sales['YearMonth'].unique(), reverse=True)
         
-        # Format for display in selectbox
         formatted_year_months = [ym.strftime('%B %Y') for ym in unique_year_months]
         
-        # Create a mapping from formatted string back to Period object
         ym_map = {ym.strftime('%B %Y'): ym for ym in unique_year_months}
 
         if formatted_year_months:
@@ -784,35 +911,32 @@ with tab1:
             
             selected_ym_period = ym_map[selected_ym_str]
 
-            # Filter data for the selected month/year
             filtered_monthly_data = df_all_sales[
                 df_all_sales['YearMonth'] == selected_ym_period
-            ].sort_values('Date', ascending=False).drop('YearMonth', axis=1) # Drop temp column
+            ].sort_values('Date', ascending=False).drop('YearMonth', axis=1)
 
             filtered_monthly_data['Date'] = filtered_monthly_data['Date'].dt.strftime('%Y-%m-%d')
             st.dataframe(filtered_monthly_data, use_container_width=True)
 
-            # --- Moved Edit/Delete Records section HERE ---
-            st.markdown("---") # Visual separator
+            st.markdown("---")
             st.subheader(f"Edit/Delete Records for {selected_ym_str}")
-            # This multiselect will always reflect the full, deduplicated dataset filtered by the selected month.
             unique_dates_for_monthly_selectbox = sorted(filtered_monthly_data['Date'].tolist(), reverse=True)
             
             if unique_dates_for_monthly_selectbox:
                 selected_date_str_monthly = st.selectbox(
                     "Select a record by Date for editing or deleting within this month:",
                     options=unique_dates_for_monthly_selectbox,
-                    key='edit_delete_selector_monthly' # Unique key for this selectbox
+                    key='edit_delete_selector_monthly'
                 )
 
-                selected_row_df_monthly = st.session_state.sales_data[ # Use full sales_data for editing
+                # Fetch the record for editing using the full sales data
+                selected_row_df_monthly = st.session_state.sales_data[
                     st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str_monthly)
                 ]
                 selected_row_monthly = selected_row_df_monthly.iloc[0]
 
                 st.markdown(f"**Selected Record for {selected_date_str_monthly}:**")
                 
-                # Input fields (no form wrapper here)
                 edit_sales_monthly = st.number_input("Edit Sales", value=float(selected_row_monthly['Sales']), format="%.2f", key='edit_sales_input_monthly')
                 edit_customers_monthly = st.number_input("Edit Customers", value=int(selected_row_monthly['Customers']), step=1, key='edit_customers_input_monthly')
                 edit_add_on_sales_monthly = st.number_input("Edit Add-on Sales", value=float(selected_row_monthly['Add_on_Sales']), format="%.2f", key='edit_add_on_sales_input_monthly')
@@ -826,40 +950,47 @@ with tab1:
 
                 col_edit_del_btns1_monthly, col_edit_del_btns2_monthly = st.columns(2)
                 
-                # Use st.button instead of st.form_submit_button for individual actions
                 update_button_monthly = col_edit_del_btns1_monthly.button("Update Record (Monthly View)", key='update_btn_monthly')
                 delete_button_monthly = col_edit_del_btns2_monthly.button("Delete Record (Monthly View)", key='delete_btn_monthly')
 
                 if update_button_monthly:
-                    st.session_state.sales_data.loc[
-                        st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str_monthly),
-                        ['Sales', 'Customers', 'Add_on_Sales', 'Weather']
-                    ] = [edit_sales_monthly, edit_customers_monthly, edit_add_on_sales_monthly, edit_weather_monthly]
-                    save_sales_data_and_clear_cache(st.session_state.sales_data)
-                    st.session_state.sales_data = load_sales_data_cached()
-                    st.success("Record updated successfully! AI will retrain.")
-                    st.session_state.sales_model = None
-                    st.session_state.customers_model = None
-                    st.experimental_rerun()
+                    if db and USER_ID and APP_ID:
+                        updated_record_data = {
+                            'Date': pd.to_datetime(selected_date_str_monthly).to_pydatetime(), # Convert to Python datetime
+                            'Sales': edit_sales_monthly,
+                            'Customers': edit_customers_monthly,
+                            'Add_on_Sales': edit_add_on_sales_monthly,
+                            'Weather': edit_weather_monthly
+                        }
+                        if save_sales_record_to_firestore(db, USER_ID, APP_ID, pd.DataFrame([updated_record_data])):
+                            st.success("Record updated successfully! AI will retrain.")
+                            st.session_state.sales_data = load_sales_data_from_firestore(db, USER_ID, APP_ID) # Reload
+                            st.session_state.sales_model = None
+                            st.session_state.customers_model = None
+                            st.experimental_rerun()
+                        else:
+                            st.error("Failed to update record in Firestore.")
+                    else:
+                        st.warning("Firebase not initialized. Cannot update record.")
                 elif delete_button_monthly:
-                    st.session_state.sales_data = st.session_state.sales_data[
-                        st.session_state.sales_data['Date'] != pd.to_datetime(selected_date_str_monthly)
-                    ].reset_index(drop=True)
-                    save_sales_data_and_clear_cache(st.session_state.sales_data)
-                    st.session_state.sales_data = load_sales_data_cached()
-                    st.success("Record deleted successfully! AI will retrain.")
-                    st.session_state.sales_model = None
-                    st.session_state.customers_model = None
-                    st.experimental_rerun()
+                    if db and USER_ID and APP_ID:
+                        if delete_sales_record_from_firestore(db, USER_ID, APP_ID, selected_date_str_monthly):
+                            st.success("Record deleted successfully! AI will retrain.")
+                            st.session_state.sales_data = load_sales_data_from_firestore(db, USER_ID, APP_ID) # Reload
+                            st.session_state.sales_model = None
+                            st.session_state.customers_model = None
+                            st.experimental_rerun()
+                        else:
+                            st.error("Failed to delete record from Firestore.")
+                    else:
+                        st.warning("Firebase not initialized. Cannot delete record.")
             else:
                 st.info("No sales records available in this month for editing or deletion.")
-            # --- End Moved Edit/Delete Records section ---
 
         else:
             st.info("No historical data available to browse by month.")
     else:
         st.info("No historical data available to browse by month.")
-    # --- End Browse All Records by Month ---
 
 
 with tab2:
