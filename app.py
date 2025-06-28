@@ -192,17 +192,19 @@ def preprocess_prophet_data(df_sales, df_events, target_column):
     df['ds'] = pd.to_datetime(df['Date'])
     df['y'] = df[target_column]
 
-    if target_column != 'Add_on_Sales':
-        df['Add_on_Sales'] = df_sales['Add_on_Sales']
-    
-    # Weather one-hot encoding for Prophet regressors
-    if 'Weather' in df.columns and not df['Weather'].empty:
-        weather_dummies = pd.get_dummies(df['Weather'], prefix='weather')
-        df = pd.concat([df, weather_dummies], axis=1)
+    # Ensure Add_on_Sales is always present and numeric
+    if 'Add_on_Sales' in df.columns:
+        df['Add_on_Sales'] = pd.to_numeric(df['Add_on_Sales'], errors='coerce').fillna(0)
     else:
-        # Create dummy columns with all zeros if 'Weather' column is absent or empty
-        for cond in ['Sunny', 'Cloudy', 'Rainy', 'Snowy']:
-            df[f'weather_{cond}'] = 0
+        df['Add_on_Sales'] = 0.0 # Default to 0 if column is missing
+
+    # Weather one-hot encoding for Prophet regressors
+    all_weather_conditions = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
+    for cond in all_weather_conditions:
+        col_name = f'weather_{cond}'
+        # Create dummy columns based on 'Weather' column; if 'Weather' is absent, these will be all zeros.
+        # This ensures consistent regressor columns regardless of the input data.
+        df[col_name] = (df['Weather'] == cond).astype(int) if 'Weather' in df.columns else 0
 
     # Prepare holidays DataFrame for Prophet from events data
     holidays_df = pd.DataFrame()
@@ -212,16 +214,11 @@ def preprocess_prophet_data(df_sales, df_events, target_column):
         holidays_df = holidays_df[['ds', 'holiday']].drop_duplicates(subset=['ds'])
 
     prophet_df = df[['ds', 'y']].copy()
-    if target_column != 'Add_on_Sales':
-        prophet_df['Add_on_Sales'] = df['Add_on_Sales']
+    prophet_df['Add_on_Sales'] = df['Add_on_Sales'] # Copy add-on sales to the prophet df
     
-    all_weather_conditions = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
     for cond in all_weather_conditions:
         col_name = f'weather_{cond}'
-        if col_name in df.columns:
-            prophet_df[col_name] = df[col_name]
-        else:
-            prophet_df[col_name] = 0
+        prophet_df[col_name] = df[col_name] # Copy weather dummies to the prophet df
 
     return prophet_df, holidays_df
 
@@ -259,38 +256,43 @@ def train_prophet_models(prophet_sales_df, prophet_customers_df, holidays_df):
         st.warning("Prophet requires at least 2 data points for training. Please add more sales records.")
         return None, None
 
-    # Sanity check: if 'y' is all zeros, Prophet will struggle to learn
+    # Sanity check: if 'y' is all zeros for sales or customers, Prophet will struggle to learn
+    # Check if target sum is zero and if there's any data
     if prophet_sales_df['y'].sum() == 0 and len(prophet_sales_df['y']) > 0:
         st.warning("Sales data contains only zeros. Prophet cannot train on zero-only data for sales. Please input non-zero sales values.")
         return None, None
     if prophet_customers_df['y'].sum() == 0 and len(prophet_customers_df['y']) > 0:
         st.warning("Customer data contains only zeros. Prophet cannot train on zero-only data for customers. Please input non-zero customer values.")
         return None, None
-
-    # Explicitly set daily seasonality
+    
+    # Initialize Prophet models with daily seasonality
+    # Weekly and yearly seasonality are usually auto-detected by Prophet if enough data is present
     sales_prophet_model = Prophet(holidays=holidays_df, interval_width=0.95, daily_seasonality=True)
     customers_prophet_model = Prophet(holidays=holidays_df, interval_width=0.95, daily_seasonality=True)
 
-    # Add regressors
+    # Add regressors to BOTH models
+    # Ensure Add_on_Sales is added if it was prepared in preprocess_prophet_data
     if 'Add_on_Sales' in prophet_sales_df.columns:
         sales_prophet_model.add_regressor('Add_on_Sales')
         customers_prophet_model.add_regressor('Add_on_Sales')
     
+    # Add all possible weather conditions as regressors
     all_weather_conditions = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
     for cond in all_weather_conditions:
         regressor_name = f'weather_{cond}'
-        # Ensure regressors are added, even if not all weather types are present in current training data
-        # This makes the model robust for future predictions where a new weather type might occur
+        # Prophet will only use regressors present in the dataframe used for .fit()
+        # Adding them here ensures they are "registered" with the model
         sales_prophet_model.add_regressor(regressor_name)
         customers_prophet_model.add_regressor(regressor_name)
 
+    # Fit the models
     sales_prophet_model.fit(prophet_sales_df)
     joblib.dump(sales_prophet_model, SALES_PROPHET_MODEL_PATH)
 
     customers_prophet_model.fit(prophet_customers_df)
     joblib.dump(customers_prophet_model, CUSTOMERS_PROPHET_MODEL_PATH)
 
-    return sales_prophet_model, customers_model
+    return sales_prophet_model, customers_prophet_model
 
 @st.cache_resource(hash_funcs={pd.DataFrame: pd.util.hash_pandas_object, pd.Series: pd.util.hash_pandas_object})
 def load_or_train_models_cached(model_type, n_estimators_rf=100):
@@ -341,8 +343,11 @@ def load_or_train_models_cached(model_type, n_estimators_rf=100):
             customers_model_exists = os.path.exists(customers_model_path)
 
             if not prophet_sales_df.empty and not prophet_customers_df.empty and len(prophet_sales_df) >= 2:
-                if prophet_sales_df['y'].sum() == 0 or prophet_customers_df['y'].sum() == 0:
-                    st.warning("Prophet cannot train with sales or customer data consisting only of zeros. Please input non-zero values.")
+                if prophet_sales_df['y'].sum() == 0 and len(prophet_sales_df['y']) > 0:
+                    st.warning("Sales data for Prophet training consists only of zeros. Prophet cannot train effectively on this. Please input non-zero sales values.")
+                    return None, None # Prevent training and return None models
+                if prophet_customers_df['y'].sum() == 0 and len(prophet_customers_df['y']) > 0:
+                    st.warning("Customer data for Prophet training consists only of zeros. Prophet cannot train effectively on this. Please input non-zero customer values.")
                     return None, None # Prevent training and return None models
 
                 if sales_model_exists and customers_model_exists:
@@ -485,8 +490,8 @@ def generate_prophet_forecast(sales_df, events_df, sales_model, customers_model,
 
     future_prophet_df = pd.DataFrame({'ds': forecast_dates})
     
-    # Use the mean of historical Add_on_Sales for future predictions
-    avg_add_on_sales = sales_df['Add_on_Sales'].mean() if not sales_df.empty else 0
+    # Use the mean of historical Add_on_Sales for future predictions, ensure it's numeric
+    avg_add_on_sales = sales_df['Add_on_Sales'].mean() if not sales_df.empty else 0.0
     future_prophet_df['Add_on_Sales'] = avg_add_on_sales
 
     # Prepare weather regressors for future forecast dates
@@ -1056,8 +1061,10 @@ with tab3:
 
                         if sales_prophet_df_cv.empty or customers_prophet_df_cv.empty or len(sales_prophet_df_cv) < 2:
                             st.warning("Prophet preprocessed data is empty or insufficient. Cannot run cross-validation.")
-                        elif sales_prophet_df_cv['y'].sum() == 0 or customers_prophet_df_cv['y'].sum() == 0:
-                            st.warning("Prophet cross-validation cannot run with sales or customer data consisting only of zeros. Please input non-zero values.")
+                        elif sales_prophet_df_cv['y'].sum() == 0 and len(sales_prophet_df_cv['y']) > 0:
+                            st.warning("Prophet cross-validation cannot run with sales data consisting only of zeros. Please input non-zero values.")
+                        elif customers_prophet_df_cv['y'].sum() == 0 and len(customers_prophet_df_cv['y']) > 0:
+                             st.warning("Prophet cross-validation cannot run with customer data consisting only of zeros. Please input non-zero values.")
                         else:
                             try:
                                 with st.spinner("Performing cross-validation for Sales model..."):
