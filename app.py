@@ -12,9 +12,10 @@ from prophet import Prophet
 from prophet.diagnostics import cross_validation, performance_metrics
 from prophet.plot import plot_cross_validation_metric
 import logging
+import json # Ensure json is imported
 
 # Firebase Imports
-import firebase_admin # Ensure this is imported for firebase_admin._apps check
+import firebase_admin 
 from firebase_admin import credentials, initialize_app
 from firebase_admin import firestore
 from firebase_admin import auth
@@ -41,21 +42,32 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 @st.cache_resource(ttl=3600) # Cache the Firebase app initialization
 def initialize_firebase_client():
     """Initializes Firebase Admin SDK and authenticates user."""
-    # Correct Pythonic way to access injected global variables
-    # The Canvas environment ensures these are defined, so direct access is typically safe.
-    # Added defensive check using getattr for robustness outside Canvas environment.
+    
+    # Use getattr with defaults for robustness in local testing
     app_id = getattr(st, '__app_id', 'default-app-id')
     firebase_config_str = getattr(st, '__firebase_config', '{}')
     initial_auth_token = getattr(st, '__initial_auth_token', None)
 
+    # --- DEBUGGING: Print the raw injected values ---
+    st.info(f"DEBUG: __app_id raw value: {app_id}")
+    st.info(f"DEBUG: __firebase_config raw value (first 100 chars): {firebase_config_str[:100]}...")
+    st.info(f"DEBUG: __initial_auth_token raw value (first 100 chars): {initial_auth_token[:100] if initial_auth_token else 'None'}...")
+    # --- END DEBUGGING ---
+
+    firebase_config = {}
     try:
-        firebase_config = json.loads(firebase_config_str) # Import json if not already
-    except json.JSONDecodeError:
-        st.error("Invalid Firebase configuration string.")
+        if firebase_config_str and firebase_config_str != '{}':
+            firebase_config = json.loads(firebase_config_str)
+        else:
+            st.error("Firebase configuration string is empty or default. Cannot initialize Firebase.")
+            return None, None, None
+    except json.JSONDecodeError as e:
+        st.error(f"Invalid Firebase configuration JSON: {e}")
         return None, None, None
 
-    if not firebase_config:
-        st.error("Firebase configuration not found. Cannot initialize Firebase.")
+    # This check might be redundant if the above `else` block catches it
+    if not firebase_config or not firebase_config.get('project_id'):
+        st.error("Firebase configuration object is empty or missing 'project_id'. Cannot initialize Firebase.")
         return None, None, None
 
     try:
@@ -74,19 +86,13 @@ def initialize_firebase_client():
             st.success(f"Authenticated with Firebase. User ID: {current_user_id}")
         else:
             st.warning("No initial auth token found. Proceeding without specific user authentication. Data might not be private per user.")
-            # For Canvas, initial_auth_token should usually be present. 
-            # For local testing without special setup, you might need a different auth method or public rules.
-            # Here, we'll use a placeholder if no token is present, implying public-like access (not ideal for real privacy).
             current_user_id = "anonymous_user_id" # Fallback if no token (less secure for prod)
 
         return db, current_user_id, app_id
     except Exception as e:
         st.error(f"Error initializing Firebase or authenticating: {e}")
-        st.info("Please ensure your Firebase project is set up correctly and the service account key is valid.")
+        st.info("Please ensure your Firebase project is set up correctly and the service account key is valid within the injected configuration.")
         return None, None, None
-
-# Import json library at the top if it's not already there
-import json
 
 db, USER_ID, APP_ID = initialize_firebase_client()
 
