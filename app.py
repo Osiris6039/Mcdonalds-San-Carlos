@@ -674,25 +674,26 @@ with tab1:
 
         if add_record_button:
             input_date_dt = pd.to_datetime(input_date)
-            # Check if the date already exists in the DataFrame
-            if input_date_dt in st.session_state.sales_data['Date'].values:
-                # If it exists, update the existing record directly
-                st.session_state.sales_data.loc[
-                    st.session_state.sales_data['Date'] == input_date_dt,
-                    ['Sales', 'Customers', 'Add_on_Sales', 'Weather']
-                ] = [sales, customers, add_on_sales, weather]
-                st.success(f"Record for {input_date.strftime('%Y-%m-%d')} updated successfully! AI will retrain.")
-            else:
-                # If it does not exist, add a new record by concatenating
-                new_record = pd.DataFrame([{
-                    'Date': input_date_dt,
-                    'Sales': sales,
-                    'Customers': customers,
-                    'Add_on_Sales': add_on_sales,
-                    'Weather': weather
-                }])
-                st.session_state.sales_data = pd.concat([st.session_state.sales_data, new_record], ignore_index=True)
-                st.success("Record added successfully! AI will retrain automatically.")
+            
+            # Create a new record DataFrame
+            new_record_df = pd.DataFrame([{
+                'Date': input_date_dt,
+                'Sales': sales,
+                'Customers': customers,
+                'Add_on_Sales': add_on_sales,
+                'Weather': weather
+            }])
+
+            # Filter out the old record for the same date if it exists
+            # Then concatenate the new record. This ensures update-or-add behavior.
+            st.session_state.sales_data = st.session_state.sales_data[
+                st.session_state.sales_data['Date'] != input_date_dt
+            ]
+            st.session_state.sales_data = pd.concat(
+                [st.session_state.sales_data, new_record_df], ignore_index=True
+            )
+            
+            st.success(f"Record for {input_date.strftime('%Y-%m-%d')} updated/added successfully! AI will retrain.")
             
             # After adding or updating, always save to disk, clear cache, and force rerun
             save_sales_data_and_clear_cache(st.session_state.sales_data)
@@ -703,8 +704,9 @@ with tab1:
 
     st.subheader("Last 7 Days of Inputs")
     if not st.session_state.sales_data.empty:
-        # Ensure the display logic also handles potential duplicates if they somehow got in (e.g. initial sample data)
-        display_data = st.session_state.sales_data.sort_values('Date', ascending=False).drop_duplicates(subset=['Date'], keep='first').head(7).copy()
+        # The underlying load_sales_data_cached() already ensures deduplication.
+        # So, sorting and taking head(7) from the session state should now be correct.
+        display_data = st.session_state.sales_data.sort_values('Date', ascending=False).head(7).copy()
         display_data['Date'] = display_data['Date'].dt.strftime('%Y-%m-%d')
         st.dataframe(display_data, use_container_width=True)
         
