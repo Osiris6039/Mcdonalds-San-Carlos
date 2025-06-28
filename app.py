@@ -281,7 +281,6 @@ def load_or_train_models_cached(model_type, n_estimators_rf=100):
         sales_model_path = SALES_RF_MODEL_PATH
         customers_model_path = CUSTOMERS_RF_MODEL_PATH
         
-        # Only attempt to load/train if sufficient sales data is available for feature creation
         if not sales_df_current.empty and sales_df_current.shape[0] >= 2:
             X, y_sales, y_customers, _ = preprocess_rf_data(sales_df_current, events_df_current)
             if not X.empty and X.shape[0] >= 2:
@@ -349,7 +348,6 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
     forecast_results = []
     
     # Initialize current day's lag features from the *latest* actual historical data
-    # Use .item() to get scalar value from Series to prevent array issues with single value
     current_sales_lag1 = historical_data_for_lags['Sales'].iloc[-1].item() if not historical_data_for_lags.empty else 0
     current_customers_lag1 = historical_data_for_lags['Customers'].iloc[-1].item() if not historical_data_for_lags.empty else 0
     
@@ -375,8 +373,8 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
             'is_weekend': int(forecast_date.weekday() in [5, 6]),
             'Sales_Lag1': current_sales_lag1,
             'Customers_Lag1': current_customers_lag1,
-            'Sales_Lag7': last_7_sales[i], # Use the pre-filled 7-day history
-            'Customers_Lag7': last_7_customers[i], # Use the pre-filled 7-day history
+            'Sales_Lag7': last_7_sales[i],
+            'Customers_Lag7': last_7_customers[i],
             'is_event': 0,
             'event_impact_score': 0.0
         }
@@ -392,11 +390,9 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
                 impact_map = {'Low': 0.1, 'Medium': 0.5, 'High': 1.0}
                 current_features_data['event_impact_score'] = impact_map.get(matching_event['Impact'].iloc[0], 0)
 
-        input_for_prediction = pd.DataFrame([current_features_data]) # Create DataFrame from dictionary
+        input_for_prediction = pd.DataFrame([current_features_data])
         
-        # Ensure feature columns match the model's expected order and presence
         feature_cols = st.session_state.get('rf_feature_columns', [])
-        # Important: Reindex to ensure feature order is identical to training data
         input_for_prediction = input_for_prediction.reindex(columns=feature_cols, fill_value=0)
 
 
@@ -412,7 +408,6 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
         customers_lower = np.percentile(customers_predictions_per_tree, 2.5)
         customers_upper = np.percentile(customers_predictions_per_tree, 97.5)
 
-        # Store forecast results, ensuring values are non-negative and rounded
         forecast_results.append({
             'Date': forecast_date.strftime('%Y-%m-%d'),
             'Forecasted Sales': max(0, round(predicted_sales, 2)),
@@ -489,16 +484,15 @@ st.title("🎯 AI Sales & Customer Forecast Analyst")
 st.markdown("Your 200 IQ analyst for daily sales and customer volume forecasting!")
 
 # --- Initialize Streamlit Session State ---
-# This ensures variables persist across reruns and are initialized only once
 if 'app_initialized' not in st.session_state:
     st.session_state['sales_data'] = load_sales_data_cached()
     st.session_state['events_data'] = load_events_data_cached()
     st.session_state['sales_model'] = None
     st.session_state['customers_model'] = None
-    st.session_state['model_type'] = "RandomForest" # Default model selection
-    st.session_state['rf_n_estimators'] = 100 # Default hyperparameter for RandomForest
-    st.session_state['future_weather_inputs'] = [] # Stores user's input for future weather
-    st.session_state['app_initialized'] = True # Set to True immediately if this block runs
+    st.session_state['model_type'] = "RandomForest"
+    st.session_state['rf_n_estimators'] = 100
+    st.session_state['future_weather_inputs'] = []
+    st.session_state['app_initialized'] = True # Ensure this is set to True if this block executes
 
 # --- Initial Sample Data Creation (Run once if files don't exist) ---
 def create_sample_data_if_empty_and_initialize():
@@ -510,8 +504,8 @@ def create_sample_data_if_empty_and_initialize():
 
     if sales_df_check.empty:
         st.info("Creating sample sales data for a quick start...")
-        dates = pd.to_datetime(pd.date_range(end=datetime.now() - timedelta(days=1), periods=60, freq='D')) # 60 days ending yesterday
-        np.random.seed(42) # For reproducibility
+        dates = pd.to_datetime(pd.date_range(end=datetime.now() - timedelta(days=1), periods=60, freq='D'))
+        np.random.seed(42)
         sales = np.random.randint(500, 1500, size=len(dates)) + np.random.randn(len(dates)) * 50
         customers = np.random.randint(50, 200, size=len(dates)) + np.random.randn(len(dates)) * 10
         add_on_sales = np.random.randint(0, 100, size=len(dates))
@@ -519,7 +513,7 @@ def create_sample_data_if_empty_and_initialize():
         weather = np.random.choice(weather_choices, size=len(dates), p=[0.5, 0.3, 0.15, 0.05])
 
         for i, date in enumerate(dates):
-            if date.weekday() >= 5: # Weekends
+            if date.weekday() >= 5:
                 sales[i] = sales[i] * 1.2
                 customers[i] = customers[i] * 1.2
             if weather[i] == 'Rainy':
@@ -537,7 +531,7 @@ def create_sample_data_if_empty_and_initialize():
             'Weather': weather
         })
         save_sales_data_and_clear_cache(sample_sales_df)
-        st.session_state.sales_data = load_sales_data_cached() # Update session state immediately
+        st.session_state.sales_data = load_sales_data_cached()
         rerun_needed = True
         
     if events_df_check.empty:
@@ -551,17 +545,16 @@ def create_sample_data_if_empty_and_initialize():
             {'Event_Date': pd.to_datetime('2024-07-04'), 'Event_Name': 'Independence Day 2024', 'Impact': 'Medium'},
         ])
         save_events_data_and_clear_cache(sample_events_df)
-        st.session_state.events_data = load_events_data_cached() # Update session state immediately
+        st.session_state.events_data = load_events_data_cached()
         rerun_needed = True
         
     if rerun_needed:
         st.success("Sample data created! Rerunning application to load models.")
-        st.experimental_rerun() # Force a rerun to ensure models are trained on new data
+        st.experimental_rerun()
 
-# Call sample data creation on initial load if needed
 if not st.session_state.get('ran_sample_data_init', False):
     create_sample_data_if_empty_and_initialize()
-    st.session_state['ran_sample_data_init'] = True # Set flag to prevent rerunning this again
+    st.session_state['ran_sample_data_init'] = True
 
 # --- Sidebar for Model Settings and Event Logger ---
 st.sidebar.header("🛠️ Model Settings")
@@ -574,7 +567,7 @@ model_type_selection = st.sidebar.selectbox(
 )
 if model_type_selection != st.session_state.model_type:
     st.session_state.model_type = model_type_selection
-    st.session_state.sales_model = None # Reset models when model type changes
+    st.session_state.sales_model = None
     st.session_state.customers_model = None
     st.experimental_rerun()
 
@@ -642,7 +635,7 @@ else:
     st.sidebar.info("No events logged yet.")
 
 # --- Model Loading and Training (runs on most reruns, but uses caching) ---
-if st.session_state.sales_data.shape[0] > 1: # Only attempt if there's enough data for basic training
+if st.session_state.sales_data.shape[0] > 1:
     with st.spinner(f"Loading/Training AI models ({st.session_state.model_type})... This happens after data changes."):
         try:
             st.session_state.sales_model, st.session_state.customers_model = load_or_train_models_cached(
@@ -715,7 +708,6 @@ with tab1:
                 key='edit_delete_selector'
             )
 
-            # Safely retrieve the selected row (it must exist if selected_date_str is not None)
             selected_row_df = st.session_state.sales_data[
                 st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str)
             ]
@@ -762,18 +754,18 @@ with tab1:
                     st.session_state.sales_model = None
                     st.session_state.customers_model = None
                     st.experimental_rerun()
-        else: # If unique_dates_for_selectbox is empty, show this message
+        else:
             st.info("No sales records available for editing or deletion.")
-    else: # If st.session_state.sales_data is empty, show this message
+    else:
         st.info("No sales data entered yet. Add records above to see them here and enable editing/deletion.")
 
 
 with tab2:
-    st.header("10-Day Sales & Customer Forecast")
+    st.header("📈 10-Day Sales & Customer Forecast")
     st.markdown("View the AI's predictions for the next 10 days.")
 
-    st.subheader("Future Weather Forecast (Next 10 Days)")
-    st.markdown("Specify the expected weather for each forecast day. Default is 'Sunny'.")
+    st.subheader("Future Weather Forecast (What-If Scenario)")
+    st.markdown("Specify the expected weather for each forecast day to see its impact. Default is 'Sunny'.")
     
     forecast_dates_for_weather = [(datetime.now() + timedelta(days=i+1)).strftime('%Y-%m-%d') for i in range(10)]
     weather_options = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
@@ -918,6 +910,35 @@ with tab3:
                         st.write(f"**Customers R² Score:** {r2_customers:.2f}")
                         st.info("An R² score closer to 1 indicates a better fit. MAE shows average error in units.")
 
+                        # --- Feature Importance Visualization for RandomForest ---
+                        st.subheader("RandomForest Feature Importance")
+                        if st.session_state.model_type == "RandomForest" and st.session_state.sales_model is not None:
+                            feature_importances = pd.DataFrame({
+                                'Feature': st.session_state['rf_feature_columns'],
+                                'Sales Importance': st.session_state.sales_model.feature_importances_,
+                                'Customers Importance': st.session_state.customers_model.feature_importances_
+                            })
+                            feature_importances = feature_importances.sort_values(by='Sales Importance', ascending=False)
+
+                            fig_fi_sales, ax_fi_sales = plt.subplots(figsize=(10, 6))
+                            sns.barplot(x='Sales Importance', y='Feature', data=feature_importances.head(10), ax=ax_fi_sales)
+                            ax_fi_sales.set_title("Top 10 Most Important Features for Sales Forecast")
+                            ax_fi_sales.set_xlabel("Importance (Relative)")
+                            ax_fi_sales.set_ylabel("Feature")
+                            plt.tight_layout()
+                            st.pyplot(fig_fi_sales)
+
+                            fig_fi_customers, ax_fi_customers = plt.subplots(figsize=(10, 6))
+                            sns.barplot(x='Customers Importance', y='Feature', data=feature_importances.sort_values(by='Customers Importance', ascending=False).head(10), ax=ax_fi_customers)
+                            ax_fi_customers.set_title("Top 10 Most Important Features for Customer Forecast")
+                            ax_fi_customers.set_xlabel("Importance (Relative)")
+                            ax_fi_customers.set_ylabel("Feature")
+                            plt.tight_layout()
+                            st.pyplot(fig_fi_customers)
+                        else:
+                            st.info("Feature importance is available for RandomForest models after training.")
+                        # --- End Feature Importance ---
+
                         fig_acc_sales, ax_acc_sales = plt.subplots(figsize=(12, 6))
                         sns.lineplot(data=accuracy_plot_df, x='Date', y='Actual Sales', label='Actual Sales', marker='o', ax=ax_acc_sales)
                         sns.lineplot(data=accuracy_plot_df, x='Date', y='Predicted Sales', label='Predicted Sales', marker='x', linestyle='--', ax=ax_acc_sales)
@@ -945,7 +966,7 @@ with tab3:
                         st.warning("Not enough data points after preprocessing for accuracy calculation. Please add more sales records.")
 
                 elif st.session_state.model_type == "Prophet":
-                    if st.session_state.sales_data.shape[0] < 30: # Prophet needs a good amount of data for CV
+                    if st.session_state.sales_data.shape[0] < 30:
                         st.warning("Prophet cross-validation requires at least 30 days of historical data for meaningful results. Please add more records.")
                     else:
                         st.info("Running Prophet cross-validation. This might take a while for large datasets.")
@@ -1000,7 +1021,7 @@ with tab3:
 
                             except Exception as e:
                                 st.error(f"Error during Prophet cross-validation: {e}. Ensure sufficient data and model setup.")
-    else:
-                st.error("AI models are not ready. Please ensure you have sufficient data and the models are trained first.")
+        else:
+            st.error("AI models are not ready. Please ensure you have sufficient data and the models are trained first.")
     else:
         st.info("Click 'Calculate Accuracy' to see how well the AI performs on past data.")
