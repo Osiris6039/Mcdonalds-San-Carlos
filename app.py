@@ -39,6 +39,7 @@ def load_sales_data_cached():
     Loads sales data from 'sales_data.csv'.
     If the file doesn't exist or is empty, an empty DataFrame is created and saved.
     Ensures 'Date' column is datetime, and data is sorted and deduplicated by date.
+    Explicitly converts Sales, Customers, Add_on_Sales to numeric.
     This function is cached by Streamlit.
     """
     if not os.path.exists(SALES_DATA_PATH) or os.path.getsize(SALES_DATA_PATH) == 0:
@@ -49,6 +50,11 @@ def load_sales_data_cached():
         df = pd.read_csv(SALES_DATA_PATH)
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce') # Coerce invalid dates to NaT
         df = df.dropna(subset=['Date']) # Drop rows where Date conversion failed
+
+    # Explicitly convert numeric columns after loading
+    df['Sales'] = pd.to_numeric(df['Sales'], errors='coerce').fillna(0)
+    df['Customers'] = pd.to_numeric(df['Customers'], errors='coerce').fillna(0).astype(int)
+    df['Add_on_Sales'] = pd.to_numeric(df['Add_on_Sales'], errors='coerce').fillna(0)
 
     # Ensure loaded data is always sorted by Date and unique (keeping the latest entry for any duplicate date)
     return df.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
@@ -136,13 +142,18 @@ def preprocess_rf_data(df_sales, df_events):
         df['is_event'] = merged['Event_Date'].notna().astype(int)
         df['event_impact_score'] = merged['Impact_Score'].fillna(0)
 
-    # Lag features
-    df['Sales_Lag1'] = df['Sales'].shift(1)
-    df['Customers_Lag1'] = df['Customers'].shift(1)
-    df['Sales_Lag7'] = df['Sales'].shift(7)
-    df['Customers_Lag7'] = df['Customers'].shift(7)
+    # Lag features - fillna(0) for initial lags if not enough historical data
+    df['Sales_Lag1'] = df['Sales'].shift(1).fillna(0)
+    df['Customers_Lag1'] = df['Customers'].shift(1).fillna(0)
+    df['Sales_Lag7'] = df['Sales'].shift(7).fillna(0)
+    df['Customers_Lag7'] = df['Customers'].shift(7).fillna(0)
 
-    df = df.fillna(0) # Fill NaNs from shifting with 0
+    # Ensure all columns are numeric before selecting features
+    for col in ['Sales', 'Customers', 'Add_on_Sales']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
+    df = df.fillna(0) # Fill any remaining NaNs, e.g., from shifting at the beginning of series
 
     feature_columns = [
         'day_of_week', 'day_of_year', 'month', 'year', 'week_of_year', 'is_weekend',
@@ -255,9 +266,15 @@ def train_prophet_models(prophet_sales_df, prophet_customers_df, holidays_df):
         customers_prophet_model.add_regressor('Add_on_Sales')
     
     weather_cols = [col for col in prophet_sales_df.columns if col.startswith('weather_')]
-    for col in weather_cols:
-        sales_prophet_model.add_regressor(col)
-        customers_prophet_model.add_regressor(col)
+    # Ensure all possible weather regressors are added, even if not present in current data
+    all_weather_conditions = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
+    for cond in all_weather_conditions:
+        regressor_name = f'weather_{cond}'
+        if regressor_name not in sales_prophet_model.train_component_cols: # Check if already added
+             sales_prophet_model.add_regressor(regressor_name)
+        if regressor_name not in customers_prophet_model.train_component_cols:
+             customers_prophet_model.add_regressor(regressor_name)
+
 
     sales_prophet_model.fit(prophet_sales_df)
     joblib.dump(sales_prophet_model, SALES_PROPHET_MODEL_PATH)
@@ -350,16 +367,21 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
     forecast_results = []
     
     # Initialize current day's lag features from the *latest* actual historical data
-    current_sales_lag1 = historical_data_for_lags['Sales'].iloc[-1].item() if not historical_data_for_lags.empty else 0
-    current_customers_lag1 = historical_data_for_lags['Customers'].iloc[-1].item() if not historical_data_for_lags.empty else 0
+    # Ensure to handle cases where historical data might be too short
+    current_sales_lag1 = historical_data_for_lags['Sales'].iloc[-1].item() if not historical_data_for_lags.empty else historical_data_for_lags['Sales'].mean() if not historical_data_for_lags.empty else 0
+    current_customers_lag1 = historical_data_for_lags['Customers'].iloc[-1].item() if not historical_data_for_lags.empty else historical_data_for_lags['Customers'].mean() if not historical_data_for_lags.empty else 0
     
     # Get last 7 days of sales/customers for Sales_Lag7/Customers_Lag7
-    last_7_sales = historical_data_for_lags['Sales'].tail(7).tolist()
-    last_7_customers = historical_data_for_lags['Customers'].tail(7).tolist()
+    # Pad with mean or 0 if historical data is short
+    last_7_sales_raw = historical_data_for_lags['Sales'].tail(7).tolist()
+    last_7_customers_raw = historical_data_for_lags['Customers'].tail(7).tolist()
+
+    avg_sales_history = historical_data_for_lags['Sales'].mean() if not historical_data_for_lags.empty else 0
+    avg_customers_history = historical_data_for_lags['Customers'].mean() if not historical_data_for_lags.empty else 0
     
-    # Ensure these lists always have 7 elements, padding with 0s at the beginning if history is short
-    last_7_sales = [0] * (7 - len(last_7_sales)) + last_7_sales
-    last_7_customers = [0] * (7 - len(last_7_customers)) + last_7_customers
+    last_7_sales = ([avg_sales_history] * (7 - len(last_7_sales_raw))) + last_7_sales_raw
+    last_7_customers = ([avg_customers_history] * (7 - len(last_7_customers_raw))) + last_7_customers_raw
+
 
     for i in range(num_days):
         forecast_date = forecast_dates[i]
@@ -375,8 +397,8 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
             'is_weekend': int(forecast_date.weekday() in [5, 6]),
             'Sales_Lag1': current_sales_lag1,
             'Customers_Lag1': current_customers_lag1,
-            'Sales_Lag7': last_7_sales[i],
-            'Customers_Lag7': last_7_customers[i],
+            'Sales_Lag7': last_7_sales[i], # Use the appropriate lagged value for this forecast day
+            'Customers_Lag7': last_7_customers[i], # Use the appropriate lagged value for this forecast day
             'is_event': 0,
             'event_impact_score': 0.0
         }
@@ -425,6 +447,7 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
         current_sales_lag1 = predicted_sales
         current_customers_lag1 = predicted_customers
         
+        # Update the 7-day lag list by removing the oldest and adding the newest prediction
         last_7_sales.pop(0)
         last_7_sales.append(predicted_sales)
         last_7_customers.pop(0)
@@ -748,7 +771,7 @@ with tab1:
 
                 st.markdown(f"**Selected Record for {selected_date_str_monthly}:**")
                 
-                # Removed the st.form(...) wrapper here
+                # Removed the st.form(...) wrapper here as per the fix
                 edit_sales_monthly = st.number_input("Edit Sales", value=float(selected_row_monthly['Sales']), format="%.2f", key='edit_sales_input_monthly')
                 edit_customers_monthly = st.number_input("Edit Customers", value=int(selected_row_monthly['Customers']), step=1, key='edit_customers_input_monthly')
                 edit_add_on_sales_monthly = st.number_input("Edit Add-on Sales", value=float(selected_row_monthly['Add_on_Sales']), format="%.2f", key='edit_add_on_sales_input_monthly')
