@@ -14,6 +14,7 @@ from prophet.plot import plot_cross_validation_metric
 import logging
 
 # Firebase Imports
+import firebase_admin # Ensure this is imported for firebase_admin._apps check
 from firebase_admin import credentials, initialize_app
 from firebase_admin import firestore
 from firebase_admin import auth
@@ -40,10 +41,18 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 @st.cache_resource(ttl=3600) # Cache the Firebase app initialization
 def initialize_firebase_client():
     """Initializes Firebase Admin SDK and authenticates user."""
-    # These variables are injected by the Canvas environment
-    app_id = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-    firebase_config = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-    initial_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+    # Correct Pythonic way to access injected global variables
+    # The Canvas environment ensures these are defined, so direct access is typically safe.
+    # Added defensive check using getattr for robustness outside Canvas environment.
+    app_id = getattr(st, '__app_id', 'default-app-id')
+    firebase_config_str = getattr(st, '__firebase_config', '{}')
+    initial_auth_token = getattr(st, '__initial_auth_token', None)
+
+    try:
+        firebase_config = json.loads(firebase_config_str) # Import json if not already
+    except json.JSONDecodeError:
+        st.error("Invalid Firebase configuration string.")
+        return None, None, None
 
     if not firebase_config:
         st.error("Firebase configuration not found. Cannot initialize Firebase.")
@@ -75,6 +84,9 @@ def initialize_firebase_client():
         st.error(f"Error initializing Firebase or authenticating: {e}")
         st.info("Please ensure your Firebase project is set up correctly and the service account key is valid.")
         return None, None, None
+
+# Import json library at the top if it's not already there
+import json
 
 db, USER_ID, APP_ID = initialize_firebase_client()
 
