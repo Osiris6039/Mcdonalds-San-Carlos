@@ -200,6 +200,7 @@ def preprocess_prophet_data(df_sales, df_events, target_column):
         weather_dummies = pd.get_dummies(df['Weather'], prefix='weather')
         df = pd.concat([df, weather_dummies], axis=1)
     else:
+        # Create dummy columns with all zeros if 'Weather' column is absent or empty
         for cond in ['Sunny', 'Cloudy', 'Rainy', 'Snowy']:
             df[f'weather_{cond}'] = 0
 
@@ -258,23 +259,30 @@ def train_prophet_models(prophet_sales_df, prophet_customers_df, holidays_df):
         st.warning("Prophet requires at least 2 data points for training. Please add more sales records.")
         return None, None
 
-    sales_prophet_model = Prophet(holidays=holidays_df, interval_width=0.95)
-    customers_prophet_model = Prophet(holidays=holidays_df, interval_width=0.95)
+    # Sanity check: if 'y' is all zeros, Prophet will struggle to learn
+    if prophet_sales_df['y'].sum() == 0 and len(prophet_sales_df['y']) > 0:
+        st.warning("Sales data contains only zeros. Prophet cannot train on zero-only data for sales. Please input non-zero sales values.")
+        return None, None
+    if prophet_customers_df['y'].sum() == 0 and len(prophet_customers_df['y']) > 0:
+        st.warning("Customer data contains only zeros. Prophet cannot train on zero-only data for customers. Please input non-zero customer values.")
+        return None, None
 
+    # Explicitly set daily seasonality
+    sales_prophet_model = Prophet(holidays=holidays_df, interval_width=0.95, daily_seasonality=True)
+    customers_prophet_model = Prophet(holidays=holidays_df, interval_width=0.95, daily_seasonality=True)
+
+    # Add regressors
     if 'Add_on_Sales' in prophet_sales_df.columns:
         sales_prophet_model.add_regressor('Add_on_Sales')
         customers_prophet_model.add_regressor('Add_on_Sales')
     
-    weather_cols = [col for col in prophet_sales_df.columns if col.startswith('weather_')]
-    # Ensure all possible weather regressors are added, even if not present in current data
     all_weather_conditions = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
     for cond in all_weather_conditions:
         regressor_name = f'weather_{cond}'
-        if regressor_name not in sales_prophet_model.train_component_cols: # Check if already added
-             sales_prophet_model.add_regressor(regressor_name)
-        if regressor_name not in customers_prophet_model.train_component_cols:
-             customers_prophet_model.add_regressor(regressor_name)
-
+        # Ensure regressors are added, even if not all weather types are present in current training data
+        # This makes the model robust for future predictions where a new weather type might occur
+        sales_prophet_model.add_regressor(regressor_name)
+        customers_prophet_model.add_regressor(regressor_name)
 
     sales_prophet_model.fit(prophet_sales_df)
     joblib.dump(sales_prophet_model, SALES_PROPHET_MODEL_PATH)
@@ -282,7 +290,7 @@ def train_prophet_models(prophet_sales_df, prophet_customers_df, holidays_df):
     customers_prophet_model.fit(prophet_customers_df)
     joblib.dump(customers_prophet_model, CUSTOMERS_PROPHET_MODEL_PATH)
 
-    return sales_prophet_model, customers_prophet_model
+    return sales_prophet_model, customers_model
 
 @st.cache_resource(hash_funcs={pd.DataFrame: pd.util.hash_pandas_object, pd.Series: pd.util.hash_pandas_object})
 def load_or_train_models_cached(model_type, n_estimators_rf=100):
@@ -328,8 +336,16 @@ def load_or_train_models_cached(model_type, n_estimators_rf=100):
             prophet_sales_df, holidays_df = preprocess_prophet_data(sales_df_current, events_df_current, 'Sales')
             prophet_customers_df, _ = preprocess_prophet_data(sales_df_current, events_df_current, 'Customers')
 
+            # Ensure sales_model and customers_model are defined before checking for file existence
+            sales_model_exists = os.path.exists(sales_model_path)
+            customers_model_exists = os.path.exists(customers_model_path)
+
             if not prophet_sales_df.empty and not prophet_customers_df.empty and len(prophet_sales_df) >= 2:
-                if os.path.exists(sales_model_path) and os.path.exists(customers_model_path):
+                if prophet_sales_df['y'].sum() == 0 or prophet_customers_df['y'].sum() == 0:
+                    st.warning("Prophet cannot train with sales or customer data consisting only of zeros. Please input non-zero values.")
+                    return None, None # Prevent training and return None models
+
+                if sales_model_exists and customers_model_exists:
                     try:
                         sales_model = joblib.load(sales_model_path)
                         customers_model = joblib.load(customers_model_path)
@@ -367,17 +383,17 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
     forecast_results = []
     
     # Initialize current day's lag features from the *latest* actual historical data
-    # Ensure to handle cases where historical data might be too short
-    current_sales_lag1 = historical_data_for_lags['Sales'].iloc[-1].item() if not historical_data_for_lags.empty else historical_data_for_lags['Sales'].mean() if not historical_data_for_lags.empty else 0
-    current_customers_lag1 = historical_data_for_lags['Customers'].iloc[-1].item() if not historical_data_for_lags.empty else historical_data_for_lags['Customers'].mean() if not historical_data_for_lags.empty else 0
+    # Use mean if not enough data for actual last value, else 0.
+    avg_sales_history = historical_data_for_lags['Sales'].mean() if not historical_data_for_lags.empty else 0
+    avg_customers_history = historical_data_for_lags['Customers'].mean() if not historical_data_for_lags.empty else 0
+
+    current_sales_lag1 = historical_data_for_lags['Sales'].iloc[-1].item() if not historical_data_for_lags.empty else avg_sales_history
+    current_customers_lag1 = historical_data_for_lags['Customers'].iloc[-1].item() if not historical_data_for_lags.empty else avg_customers_history
     
     # Get last 7 days of sales/customers for Sales_Lag7/Customers_Lag7
     # Pad with mean or 0 if historical data is short
     last_7_sales_raw = historical_data_for_lags['Sales'].tail(7).tolist()
     last_7_customers_raw = historical_data_for_lags['Customers'].tail(7).tolist()
-
-    avg_sales_history = historical_data_for_lags['Sales'].mean() if not historical_data_for_lags.empty else 0
-    avg_customers_history = historical_data_for_lags['Customers'].mean() if not historical_data_for_lags.empty else 0
     
     last_7_sales = ([avg_sales_history] * (7 - len(last_7_sales_raw))) + last_7_sales_raw
     last_7_customers = ([avg_customers_history] * (7 - len(last_7_customers_raw))) + last_7_customers_raw
@@ -417,6 +433,7 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
         input_for_prediction = pd.DataFrame([current_features_data])
         
         feature_cols = st.session_state.get('rf_feature_columns', [])
+        # Ensure input_for_prediction has all expected feature columns, filling with 0 if missing
         input_for_prediction = input_for_prediction.reindex(columns=feature_cols, fill_value=0)
 
 
@@ -468,13 +485,15 @@ def generate_prophet_forecast(sales_df, events_df, sales_model, customers_model,
 
     future_prophet_df = pd.DataFrame({'ds': forecast_dates})
     
+    # Use the mean of historical Add_on_Sales for future predictions
     avg_add_on_sales = sales_df['Add_on_Sales'].mean() if not sales_df.empty else 0
     future_prophet_df['Add_on_Sales'] = avg_add_on_sales
 
-    all_weather_conditions = st.session_state.get('all_weather_conditions', ['Sunny', 'Cloudy', 'Rainy', 'Snowy'])
+    # Prepare weather regressors for future forecast dates
+    all_weather_conditions = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
     for cond in all_weather_conditions:
         col_name = f'weather_{cond}'
-        future_prophet_df[col_name] = 0
+        future_prophet_df[col_name] = 0 # Initialize all weather columns to 0
 
     for i, row in future_prophet_df.iterrows():
         current_date_str = row['ds'].strftime('%Y-%m-%d')
@@ -483,7 +502,7 @@ def generate_prophet_forecast(sales_df, events_df, sales_model, customers_model,
             chosen_weather = matching_weather_input['weather']
             col_name = f'weather_{chosen_weather}'
             if col_name in future_prophet_df.columns:
-                future_prophet_df.loc[i, col_name] = 1
+                future_prophet_df.loc[i, col_name] = 1 # Set the chosen weather for the day to 1
 
     forecast_sales = sales_model.predict(future_prophet_df)
     forecast_customers = customers_model.predict(future_prophet_df)
@@ -771,7 +790,7 @@ with tab1:
 
                 st.markdown(f"**Selected Record for {selected_date_str_monthly}:**")
                 
-                # Removed the st.form(...) wrapper here as per the fix
+                # Input fields (no form wrapper here)
                 edit_sales_monthly = st.number_input("Edit Sales", value=float(selected_row_monthly['Sales']), format="%.2f", key='edit_sales_input_monthly')
                 edit_customers_monthly = st.number_input("Edit Customers", value=int(selected_row_monthly['Customers']), step=1, key='edit_customers_input_monthly')
                 edit_add_on_sales_monthly = st.number_input("Edit Add-on Sales", value=float(selected_row_monthly['Add_on_Sales']), format="%.2f", key='edit_add_on_sales_input_monthly')
@@ -785,7 +804,7 @@ with tab1:
 
                 col_edit_del_btns1_monthly, col_edit_del_btns2_monthly = st.columns(2)
                 
-                # IMPORTANT FIX: Use st.button instead of st.form_submit_button
+                # Use st.button instead of st.form_submit_button for individual actions
                 update_button_monthly = col_edit_del_btns1_monthly.button("Update Record (Monthly View)", key='update_btn_monthly')
                 delete_button_monthly = col_edit_del_btns2_monthly.button("Delete Record (Monthly View)", key='delete_btn_monthly')
 
@@ -1037,6 +1056,8 @@ with tab3:
 
                         if sales_prophet_df_cv.empty or customers_prophet_df_cv.empty or len(sales_prophet_df_cv) < 2:
                             st.warning("Prophet preprocessed data is empty or insufficient. Cannot run cross-validation.")
+                        elif sales_prophet_df_cv['y'].sum() == 0 or customers_prophet_df_cv['y'].sum() == 0:
+                            st.warning("Prophet cross-validation cannot run with sales or customer data consisting only of zeros. Please input non-zero values.")
                         else:
                             try:
                                 with st.spinner("Performing cross-validation for Sales model..."):
