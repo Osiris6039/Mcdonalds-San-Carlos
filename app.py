@@ -124,7 +124,7 @@ def preprocess_rf_data(df_sales, df_events):
     all_weather_conditions = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
     for cond in all_weather_conditions:
         col_name = f'weather_{cond}'
-        df[col_name] = (df['Weather'] == cond).astype(int)
+        df[col_name] = (df['Weather'] == cond).astype(int) if 'Weather' in df.columns else 0 # Defensive check
 
     # Merge with events data to incorporate event impact
     df['is_event'] = 0
@@ -259,10 +259,10 @@ def train_prophet_models(prophet_sales_df, prophet_customers_df, holidays_df):
     # Sanity check: if 'y' is all zeros for sales or customers, Prophet will struggle to learn
     # Check if target sum is zero and if there's any data
     if prophet_sales_df['y'].sum() == 0 and len(prophet_sales_df['y']) > 0:
-        st.warning("Sales data contains only zeros. Prophet cannot train on zero-only data for sales. Please input non-zero sales values.")
+        st.warning("Sales data for Prophet training consists only of zeros. Prophet cannot train effectively on this. Please input non-zero sales values.")
         return None, None
     if prophet_customers_df['y'].sum() == 0 and len(prophet_customers_df['y']) > 0:
-        st.warning("Customer data contains only zeros. Prophet cannot train on zero-only data for customers. Please input non-zero customer values.")
+        st.warning("Customer data for Prophet training consists only of zeros. Prophet cannot train effectively on this. Please input non-zero customer values.")
         return None, None
     
     # Initialize Prophet models with daily seasonality
@@ -378,8 +378,9 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
         st.warning("RandomForest models are not trained. Please ensure you have sufficient data and a model is selected and trained.")
         return pd.DataFrame()
 
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    forecast_dates = [today + timedelta(days=i) for i in range(1, num_days + 1)]
+    # Ensure consistent Timestamp type for all date operations
+    today = pd.Timestamp(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
+    forecast_dates = [today + pd.Timedelta(days=i) for i in range(1, num_days + 1)]
 
     historical_data_for_lags = sales_df.copy()
     historical_data_for_lags['Date'] = pd.to_datetime(historical_data_for_lags['Date'])
@@ -389,8 +390,8 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
     
     # Initialize current day's lag features from the *latest* actual historical data
     # Use mean if not enough data for actual last value, else 0.
-    avg_sales_history = historical_data_for_lags['Sales'].mean() if not historical_data_for_lags.empty else 0
-    avg_customers_history = historical_data_for_lags['Customers'].mean() if not historical_data_for_lags.empty else 0
+    avg_sales_history = historical_data_for_lags['Sales'].mean() if not historical_data_for_lags.empty else 0.0
+    avg_customers_history = historical_data_for_lags['Customers'].mean() if not historical_data_for_lags.empty else 0.0
 
     current_sales_lag1 = historical_data_for_lags['Sales'].iloc[-1].item() if not historical_data_for_lags.empty else avg_sales_history
     current_customers_lag1 = historical_data_for_lags['Customers'].iloc[-1].item() if not historical_data_for_lags.empty else avg_customers_history
@@ -407,6 +408,11 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
     for i in range(num_days):
         forecast_date = forecast_dates[i]
         
+        # Defensive check: Ensure forecast_date is a Timestamp before accessing attributes
+        if not isinstance(forecast_date, pd.Timestamp):
+            st.error(f"Internal Error: forecast_date is not a pandas Timestamp. Type: {type(forecast_date)}. Value: {forecast_date}. This indicates a corrupted state.")
+            return pd.DataFrame() # Exit to prevent further errors
+
         current_weather_input = next((item['weather'] for item in future_weather_inputs if item['date'] == forecast_date.strftime('%Y-%m-%d')), 'Sunny')
 
         current_features_data = {
