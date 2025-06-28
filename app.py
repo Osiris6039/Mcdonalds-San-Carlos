@@ -412,7 +412,9 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
         # Retrieve the date for the current iteration. It's already a pd.Timestamp from forecast_dates list.
         current_forecast_date = forecast_dates[i]
         
-        current_weather_input = next((item['weather'] for item in future_weather_inputs if item['date'] == current_forecast_date.strftime('%Y-%m-%d')), 'Sunny')
+        # Explicitly ensure current_weather_input is a string before comparison to avoid Series-like behavior
+        # The 'next' function ensures a single string is returned ('Sunny' if no match)
+        current_weather_input_str = str(next((item['weather'] for item in future_weather_inputs if item['date'] == current_forecast_date.strftime('%Y-%m-%d')), 'Sunny'))
 
         # Directly access attributes from current_forecast_date (which is a pd.Timestamp)
         current_features_data = {
@@ -433,11 +435,12 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
 
         all_weather_conditions = st.session_state.get('all_weather_conditions', ['Sunny', 'Cloudy', 'Rainy', 'Snowy'])
         for cond in all_weather_conditions:
-            current_features_data[f'weather_{cond}'] = (current_weather_input == cond).astype(int)
+            # FIX: Use direct integer conversion of the boolean result
+            current_features_data[f'weather_{cond}'] = int(current_weather_input_str == cond)
 
         if not events_df.empty:
-            # When merging/checking events, explicitly convert to datetime for robust comparison
-            matching_event = events_df[events_df['Event_Date'] == current_forecast_date.to_pydatetime().date()] # Compare date part only
+            # When merging/checking events, compare date parts only for robustness
+            matching_event = events_df[events_df['Event_Date'].dt.date == current_forecast_date.date()]
             if not matching_event.empty:
                 current_features_data['is_event'] = 1
                 impact_map = {'Low': 0.1, 'Medium': 0.5, 'High': 1.0}
@@ -470,7 +473,7 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
             'Forecasted Customers': max(0, round(predicted_customers)),
             'Customers Lower Bound (95%)': max(0, round(customers_lower)),
             'Customers Upper Bound (95%)': max(0, round(customers_upper)),
-            'Weather': current_weather_input
+            'Weather': current_weather_input_str # Store the actual string for display
         })
 
         # Update lag values for the next iteration (chained prediction)
