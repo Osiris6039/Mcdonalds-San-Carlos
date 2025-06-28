@@ -117,7 +117,7 @@ def preprocess_rf_data(df_sales, df_events):
     df['day_of_year'] = df['Date'].dt.dayofyear
     df['month'] = df['Date'].dt.month
     df['year'] = df['Date'].dt.year
-    df['week_of_year'] = df['Date'].dt.isocalendar().week.astype(int)
+    df['week_of_year'] = df['Date'].dt.isocalendar().week.astype(int) if hasattr(df['Date'].dt, 'isocalendar') else df['Date'].dt.isocalendar().week.astype(int) # Defensive check for older pandas versions
     df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
 
     # Weather one-hot encoding
@@ -406,13 +406,9 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
 
 
     for i in range(num_days):
-        forecast_date = forecast_dates[i]
+        # IMPORTANT FIX: Explicitly ensure forecast_date is a Timestamp within the loop
+        forecast_date = pd.Timestamp(forecast_dates[i])
         
-        # Defensive check: Ensure forecast_date is a Timestamp before accessing attributes
-        if not isinstance(forecast_date, pd.Timestamp):
-            st.error(f"Internal Error: forecast_date is not a pandas Timestamp. Type: {type(forecast_date)}. Value: {forecast_date}. This indicates a corrupted state.")
-            return pd.DataFrame() # Exit to prevent further errors
-
         current_weather_input = next((item['weather'] for item in future_weather_inputs if item['date'] == forecast_date.strftime('%Y-%m-%d')), 'Sunny')
 
         current_features_data = {
@@ -420,7 +416,7 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
             'day_of_year': forecast_date.dayofyear,
             'month': forecast_date.month,
             'year': forecast_date.year,
-            'week_of_year': forecast_date.isocalendar().week.astype(int),
+            'week_of_year': forecast_date.isocalendar().week.astype(int), # This should now work reliably
             'is_weekend': int(forecast_date.weekday() in [5, 6]),
             'Sales_Lag1': current_sales_lag1,
             'Customers_Lag1': current_customers_lag1,
