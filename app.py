@@ -500,7 +500,7 @@ if 'app_initialized' not in st.session_state:
 def create_sample_data_if_empty_and_initialize():
     """
     Creates sample event data if file is empty or doesn't exist.
-    Sales data is NOT created automatically.
+    Sales data is NOT created automatically in this version.
     """
     events_df_check = load_events_data_cached()
 
@@ -677,11 +677,10 @@ with tab1:
             st.experimental_rerun() # Trigger a full rerun to update all components
 
     st.subheader("Most Recently Inputted/Updated Data (Last 7 Unique Days)")
-    # This section now exclusively uses the sorted and deduplicated session state data.
-    # The `load_sales_data_cached` and the logic in `add_record_button`
-    # should ensure st.session_state.sales_data is clean before it gets here.
+    # This section now explicitly ensures deduplication and displays only the latest 7 unique records.
+    # It will start empty if no data has been inputted.
     if not st.session_state.sales_data.empty:
-        # Explicitly deduplicate and then take the head(7) for display, just to be super safe.
+        # Sort by date, drop duplicates, and take the last 7
         display_data = st.session_state.sales_data.sort_values('Date', ascending=False).drop_duplicates(subset=['Date'], keep='first').head(7).copy()
         
         if not display_data.empty:
@@ -692,68 +691,8 @@ with tab1:
     else:
         st.info("No data manually entered or updated yet. Input new records above!")
         
-    st.subheader("Edit/Delete Records (Select from all records)")
-    # This multiselect will always reflect the full, deduplicated dataset.
-    unique_dates_for_selectbox = sorted(st.session_state.sales_data['Date'].dt.strftime('%Y-%m-%d').unique().tolist(), reverse=True)
-    
-    if unique_dates_for_selectbox:
-        selected_date_str = st.selectbox(
-            "Select a record by Date for editing or deleting:",
-            options=unique_dates_for_selectbox,
-            key='edit_delete_selector'
-        )
 
-        selected_row_df = st.session_state.sales_data[
-            st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str)
-        ]
-        selected_row = selected_row_df.iloc[0]
-
-        st.markdown(f"**Selected Record for {selected_date_str}:**")
-        
-        with st.form("edit_delete_form", clear_on_submit=False):
-            edit_sales = st.number_input("Edit Sales", value=float(selected_row['Sales']), format="%.2f", key='edit_sales_input')
-            edit_customers = st.number_input("Edit Customers", value=int(selected_row['Customers']), step=1, key='edit_customers_input')
-            edit_add_on_sales = st.number_input("Edit Add-on Sales", value=float(selected_row['Add_on_Sales']), format="%.2f", key='edit_add_on_sales_input')
-            
-            weather_options = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
-            try:
-                default_weather_index = weather_options.index(selected_row['Weather'])
-            except ValueError:
-                default_weather_index = 0
-            edit_weather = st.selectbox("Edit Weather", weather_options, index=default_weather_index, key='edit_weather_select')
-
-            col_edit_del_btns1, col_edit_del_btns2 = st.columns(2)
-            with col_edit_del_btns1:
-                update_button = st.form_submit_button("Update Record")
-            with col_edit_del_btns2:
-                delete_button = st.form_submit_button("Delete Record")
-
-            if update_button:
-                st.session_state.sales_data.loc[
-                    st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str),
-                    ['Sales', 'Customers', 'Add_on_Sales', 'Weather']
-                ] = [edit_sales, edit_customers, edit_add_on_sales, edit_weather]
-                save_sales_data_and_clear_cache(st.session_state.sales_data)
-                st.session_state.sales_data = load_sales_data_cached()
-                st.success("Record updated successfully! AI will retrain.")
-                st.session_state.sales_model = None
-                st.session_state.customers_model = None
-                st.experimental_rerun()
-            elif delete_button:
-                st.session_state.sales_data = st.session_state.sales_data[
-                    st.session_state.sales_data['Date'] != pd.to_datetime(selected_date_str)
-                ].reset_index(drop=True)
-                save_sales_data_and_clear_cache(st.session_state.sales_data)
-                st.session_state.sales_data = load_sales_data_cached()
-                st.success("Record deleted successfully! AI will retrain.")
-                st.session_state.sales_model = None
-                st.session_state.customers_model = None
-                st.experimental_rerun()
-    else:
-        st.info("No sales records available for editing or deletion.")
-
-
-    # --- New Feature: Browse All Records by Month ---
+    # --- Browse All Records by Month (now includes Edit/Delete) ---
     st.subheader("Browse All Records by Month")
     if not st.session_state.sales_data.empty:
         df_all_sales = st.session_state.sales_data.copy()
@@ -788,11 +727,75 @@ with tab1:
 
             filtered_monthly_data['Date'] = filtered_monthly_data['Date'].dt.strftime('%Y-%m-%d')
             st.dataframe(filtered_monthly_data, use_container_width=True)
+
+            # --- Moved Edit/Delete Records section HERE ---
+            st.markdown("---") # Visual separator
+            st.subheader(f"Edit/Delete Records for {selected_ym_str}")
+            # This multiselect will always reflect the full, deduplicated dataset filtered by the selected month.
+            unique_dates_for_monthly_selectbox = sorted(filtered_monthly_data['Date'].tolist(), reverse=True)
+            
+            if unique_dates_for_monthly_selectbox:
+                selected_date_str_monthly = st.selectbox(
+                    "Select a record by Date for editing or deleting within this month:",
+                    options=unique_dates_for_monthly_selectbox,
+                    key='edit_delete_selector_monthly' # Unique key for this selectbox
+                )
+
+                selected_row_df_monthly = st.session_state.sales_data[ # Use full sales_data for editing
+                    st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str_monthly)
+                ]
+                selected_row_monthly = selected_row_df_monthly.iloc[0]
+
+                st.markdown(f"**Selected Record for {selected_date_str_monthly}:**")
+                
+                with st.form("edit_delete_form_monthly", clear_on_submit=False): # Unique key for this form
+                    edit_sales_monthly = st.number_input("Edit Sales", value=float(selected_row_monthly['Sales']), format="%.2f", key='edit_sales_input_monthly')
+                    edit_customers_monthly = st.number_input("Edit Customers", value=int(selected_row_monthly['Customers']), step=1, key='edit_customers_input_monthly')
+                    edit_add_on_sales_monthly = st.number_input("Edit Add-on Sales", value=float(selected_row_monthly['Add_on_Sales']), format="%.2f", key='edit_add_on_sales_input_monthly')
+                    
+                    weather_options_monthly = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
+                    try:
+                        default_weather_index_monthly = weather_options_monthly.index(selected_row_monthly['Weather'])
+                    except ValueError:
+                        default_weather_index_monthly = 0
+                    edit_weather_monthly = st.selectbox("Edit Weather", weather_options_monthly, index=default_weather_index_monthly, key='edit_weather_select_monthly')
+
+                    col_edit_del_btns1_monthly, col_edit_del_btns2_monthly = st.columns(2)
+                    with col_edit_del_btns1_monthly:
+                        update_button_monthly = st.form_submit_button("Update Record (Monthly View)", key='update_btn_monthly')
+                    with col_edit_del_btns2_monthly:
+                        delete_button_monthly = st.form_submit_button("Delete Record (Monthly View)", key='delete_btn_monthly')
+
+                    if update_button_monthly:
+                        st.session_state.sales_data.loc[
+                            st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str_monthly),
+                            ['Sales', 'Customers', 'Add_on_Sales', 'Weather']
+                        ] = [edit_sales_monthly, edit_customers_monthly, edit_add_on_sales_monthly, edit_weather_monthly]
+                        save_sales_data_and_clear_cache(st.session_state.sales_data)
+                        st.session_state.sales_data = load_sales_data_cached()
+                        st.success("Record updated successfully! AI will retrain.")
+                        st.session_state.sales_model = None
+                        st.session_state.customers_model = None
+                        st.experimental_rerun()
+                    elif delete_button_monthly:
+                        st.session_state.sales_data = st.session_state.sales_data[
+                            st.session_state.sales_data['Date'] != pd.to_datetime(selected_date_str_monthly)
+                        ].reset_index(drop=True)
+                        save_sales_data_and_clear_cache(st.session_state.sales_data)
+                        st.session_state.sales_data = load_sales_data_cached()
+                        st.success("Record deleted successfully! AI will retrain.")
+                        st.session_state.sales_model = None
+                        st.session_state.customers_model = None
+                        st.experimental_rerun()
+            else:
+                st.info("No sales records available in this month for editing or deletion.")
+            # --- End Moved Edit/Delete Records section ---
+
         else:
             st.info("No historical data available to browse by month.")
     else:
         st.info("No historical data available to browse by month.")
-    # --- End New Feature ---
+    # --- End Browse All Records by Month ---
 
 
 with tab2:
