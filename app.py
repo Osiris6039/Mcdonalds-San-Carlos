@@ -499,47 +499,12 @@ if 'app_initialized' not in st.session_state:
 # --- Initial Sample Data Creation (Run once if files don't exist) ---
 def create_sample_data_if_empty_and_initialize():
     """
-    Creates sample sales and event data if files are empty or don't exist.
-    This function specifically avoids creating data for *today's date* to prevent immediate overlaps
-    with user's first input for today.
+    Creates sample event data if file is empty or doesn't exist.
+    Sales data is NOT created automatically.
     """
-    sales_df_check = load_sales_data_cached()
     events_df_check = load_events_data_cached()
 
     rerun_needed = False
-
-    if sales_df_check.empty:
-        st.info("Creating sample sales data for a quick start...")
-        # Create data up to yesterday, ensuring there's no overlap with today's potential input
-        dates = pd.to_datetime(pd.date_range(end=datetime.now() - timedelta(days=1), periods=60, freq='D'))
-        np.random.seed(42)
-        sales = np.random.randint(500, 1500, size=len(dates)) + np.random.randn(len(dates)) * 50
-        customers = np.random.randint(50, 200, size=len(dates)) + np.random.randn(len(dates)) * 10
-        add_on_sales = np.random.randint(0, 100, size=len(dates))
-        weather_choices = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
-        weather = np.random.choice(weather_choices, size=len(dates), p=[0.5, 0.3, 0.15, 0.05])
-
-        for i, date in enumerate(dates):
-            if date.weekday() >= 5:
-                sales[i] = sales[i] * 1.2
-                customers[i] = customers[i] * 1.2
-            if weather[i] == 'Rainy':
-                sales[i] = sales[i] * 0.8
-                customers[i] = customers[i] * 0.8
-            if weather[i] == 'Snowy':
-                sales[i] = sales[i] * 0.7
-                customers[i] = customers[i] * 0.7
-
-        sample_sales_df = pd.DataFrame({
-            'Date': dates,
-            'Sales': sales.round(2),
-            'Customers': customers.round().astype(int),
-            'Add_on_Sales': add_on_sales.round(2),
-            'Weather': weather
-        })
-        save_sales_data_and_clear_cache(sample_sales_df)
-        st.session_state.sales_data = load_sales_data_cached()
-        rerun_needed = True
         
     if events_df_check.empty:
         st.info("Creating sample event data...")
@@ -556,7 +521,7 @@ def create_sample_data_if_empty_and_initialize():
         rerun_needed = True
         
     if rerun_needed:
-        st.success("Sample data created! Rerunning application to load models.")
+        st.success("Sample event data created! Rerunning application to load models.")
         st.experimental_rerun()
 
 if not st.session_state.get('ran_sample_data_init', False):
@@ -691,112 +656,111 @@ with tab1:
                 'Weather': weather
             }])
 
-            # Fetch the current sales data from session state
-            current_sales_data_in_session = st.session_state.sales_data.copy()
-
-            # Remove any existing record for the input_date_dt from the current data
-            filtered_sales_data = current_sales_data_in_session[
-                current_sales_data_in_session['Date'] != input_date_dt
+            # Filter out the old record for the same date if it exists
+            # Then concatenate the new record. This ensures update-or-add behavior.
+            st.session_state.sales_data = st.session_state.sales_data[
+                st.session_state.sales_data['Date'] != input_date_dt
             ]
-            
-            # Concatenate the filtered data with the new input record
-            updated_sales_data = pd.concat(
-                [filtered_sales_data, new_input_record_df], ignore_index=True
+            st.session_state.sales_data = pd.concat(
+                [st.session_state.sales_data, new_input_record_df], ignore_index=True
             )
-
-            # Ensure the combined DataFrame is correctly sorted and deduplicated by date before saving
-            # This is already handled by save_sales_data_and_clear_cache but doing it explicitly here too
-            # before updating session state for immediate display consistency.
-            updated_sales_data = updated_sales_data.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
-
-            st.session_state.sales_data = updated_sales_data # Update session state first
-
+            
             st.success(f"Record for {input_date.strftime('%Y-%m-%d')} updated/added successfully! AI will retrain.")
             
             # After adding or updating, always save to disk, clear cache, and force rerun
-            save_sales_data_and_clear_cache(st.session_state.sales_data) # Save the now clean session state data
-            st.session_state.sales_data = load_sales_data_cached() # Re-load from disk to ensure freshest data
+            # This save/load cycle ensures the underlying CSV is updated AND session state is re-synced from it
+            save_sales_data_and_clear_cache(st.session_state.sales_data) 
+            st.session_state.sales_data = load_sales_data_cached() # Explicitly reload into session state
+            
             st.session_state.sales_model = None # Force model retraining
             st.session_state.customers_model = None # Force model retraining
             st.experimental_rerun() # Trigger a full rerun to update all components
 
     st.subheader("Most Recently Inputted/Updated Data (Last 7 Unique Days)")
-    # This section now exclusively uses the sorted and deduplicated session state data
+    # This section now exclusively uses the sorted and deduplicated session state data.
+    # The `load_sales_data_cached` and the logic in `add_record_button`
+    # should ensure st.session_state.sales_data is clean before it gets here.
     if not st.session_state.sales_data.empty:
-        # Filter for recent inputs by checking if they are not part of the initial sample data range
-        # For simplicity, let's consider data from 'today' onwards as 'inputted' or explicitly updated.
-        # This is a simplification; a more robust solution would track actual input dates.
-        # For now, let's just show the latest 7 *unique* records that exist in the (deduplicated) data.
-        display_data = st.session_state.sales_data.sort_values('Date', ascending=False).head(7).copy()
-        display_data['Date'] = display_data['Date'].dt.strftime('%Y-%m-%d')
-        st.dataframe(display_data, use_container_width=True)
+        # Explicitly deduplicate and then take the head(7) for display, just to be super safe.
+        display_data = st.session_state.sales_data.sort_values('Date', ascending=False).drop_duplicates(subset=['Date'], keep='first').head(7).copy()
         
-        st.subheader("Edit/Delete Records (Select from all records)")
-        # This multiselect will always reflect the full, deduplicated dataset.
-        unique_dates_for_selectbox = sorted(st.session_state.sales_data['Date'].dt.strftime('%Y-%m-%d').unique().tolist(), reverse=True)
-        
-        if unique_dates_for_selectbox:
-            selected_date_str = st.selectbox(
-                "Select a record by Date for editing or deleting:",
-                options=unique_dates_for_selectbox,
-                key='edit_delete_selector'
-            )
-
-            selected_row_df = st.session_state.sales_data[
-                st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str)
-            ]
-            selected_row = selected_row_df.iloc[0]
-
-            st.markdown(f"**Selected Record for {selected_date_str}:**")
-            
-            with st.form("edit_delete_form", clear_on_submit=False):
-                edit_sales = st.number_input("Edit Sales", value=float(selected_row['Sales']), format="%.2f", key='edit_sales_input')
-                edit_customers = st.number_input("Edit Customers", value=int(selected_row['Customers']), step=1, key='edit_customers_input')
-                edit_add_on_sales = st.number_input("Edit Add-on Sales", value=float(selected_row['Add_on_Sales']), format="%.2f", key='edit_add_on_sales_input')
-                
-                weather_options = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
-                try:
-                    default_weather_index = weather_options.index(selected_row['Weather'])
-                except ValueError:
-                    default_weather_index = 0
-                edit_weather = st.selectbox("Edit Weather", weather_options, index=default_weather_index, key='edit_weather_select')
-
-                col_edit_del_btns1, col_edit_del_btns2 = st.columns(2)
-                with col_edit_del_btns1:
-                    update_button = st.form_submit_button("Update Record")
-                with col_edit_del_btns2:
-                    delete_button = st.form_submit_button("Delete Record")
-
-                if update_button:
-                    st.session_state.sales_data.loc[
-                        st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str),
-                        ['Sales', 'Customers', 'Add_on_Sales', 'Weather']
-                    ] = [edit_sales, edit_customers, edit_add_on_sales, edit_weather]
-                    save_sales_data_and_clear_cache(st.session_state.sales_data)
-                    st.session_state.sales_data = load_sales_data_cached()
-                    st.success("Record updated successfully! AI will retrain.")
-                    st.session_state.sales_model = None
-                    st.session_state.customers_model = None
-                    st.experimental_rerun()
-                elif delete_button:
-                    st.session_state.sales_data = st.session_state.sales_data[
-                        st.session_state.sales_data['Date'] != pd.to_datetime(selected_date_str)
-                    ].reset_index(drop=True)
-                    save_sales_data_and_clear_cache(st.session_state.sales_data)
-                    st.session_state.sales_data = load_sales_data_cached()
-                    st.success("Record deleted successfully! AI will retrain.")
-                    st.session_state.sales_model = None
-                    st.session_state.customers_model = None
-                    st.experimental_rerun()
+        if not display_data.empty:
+            display_data['Date'] = display_data['Date'].dt.strftime('%Y-%m-%d')
+            st.dataframe(display_data, use_container_width=True)
         else:
-            st.info("No sales records available for editing or deletion.")
+            st.info("No data manually entered or updated yet. Input new records above!")
     else:
-        st.info("No sales data entered yet. Add records above to see them here and enable editing/deletion.")
+        st.info("No data manually entered or updated yet. Input new records above!")
+        
+    st.subheader("Edit/Delete Records (Select from all records)")
+    # This multiselect will always reflect the full, deduplicated dataset.
+    unique_dates_for_selectbox = sorted(st.session_state.sales_data['Date'].dt.strftime('%Y-%m-%d').unique().tolist(), reverse=True)
+    
+    if unique_dates_for_selectbox:
+        selected_date_str = st.selectbox(
+            "Select a record by Date for editing or deleting:",
+            options=unique_dates_for_selectbox,
+            key='edit_delete_selector'
+        )
+
+        selected_row_df = st.session_state.sales_data[
+            st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str)
+        ]
+        selected_row = selected_row_df.iloc[0]
+
+        st.markdown(f"**Selected Record for {selected_date_str}:**")
+        
+        with st.form("edit_delete_form", clear_on_submit=False):
+            edit_sales = st.number_input("Edit Sales", value=float(selected_row['Sales']), format="%.2f", key='edit_sales_input')
+            edit_customers = st.number_input("Edit Customers", value=int(selected_row['Customers']), step=1, key='edit_customers_input')
+            edit_add_on_sales = st.number_input("Edit Add-on Sales", value=float(selected_row['Add_on_Sales']), format="%.2f", key='edit_add_on_sales_input')
+            
+            weather_options = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
+            try:
+                default_weather_index = weather_options.index(selected_row['Weather'])
+            except ValueError:
+                default_weather_index = 0
+            edit_weather = st.selectbox("Edit Weather", weather_options, index=default_weather_index, key='edit_weather_select')
+
+            col_edit_del_btns1, col_edit_del_btns2 = st.columns(2)
+            with col_edit_del_btns1:
+                update_button = st.form_submit_button("Update Record")
+            with col_edit_del_btns2:
+                delete_button = st.form_submit_button("Delete Record")
+
+            if update_button:
+                st.session_state.sales_data.loc[
+                    st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str),
+                    ['Sales', 'Customers', 'Add_on_Sales', 'Weather']
+                ] = [edit_sales, edit_customers, edit_add_on_sales, edit_weather]
+                save_sales_data_and_clear_cache(st.session_state.sales_data)
+                st.session_state.sales_data = load_sales_data_cached()
+                st.success("Record updated successfully! AI will retrain.")
+                st.session_state.sales_model = None
+                st.session_state.customers_model = None
+                st.experimental_rerun()
+            elif delete_button:
+                st.session_state.sales_data = st.session_state.sales_data[
+                    st.session_state.sales_data['Date'] != pd.to_datetime(selected_date_str)
+                ].reset_index(drop=True)
+                save_sales_data_and_clear_cache(st.session_state.sales_data)
+                st.session_state.sales_data = load_sales_data_cached()
+                st.success("Record deleted successfully! AI will retrain.")
+                st.session_state.sales_model = None
+                st.session_state.customers_model = None
+                st.experimental_rerun()
+    else:
+        st.info("No sales records available for editing or deletion.")
+
 
     # --- New Feature: Browse All Records by Month ---
     st.subheader("Browse All Records by Month")
     if not st.session_state.sales_data.empty:
         df_all_sales = st.session_state.sales_data.copy()
+        
+        # Ensure df_all_sales is deduplicated here as well for display consistency
+        df_all_sales = df_all_sales.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
+
         df_all_sales['YearMonth'] = df_all_sales['Date'].dt.to_period('M')
 
         # Get unique YearMonths for selection, sorted descending
