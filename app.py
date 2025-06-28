@@ -1000,7 +1000,7 @@ with tab3:
 
                             except Exception as e:
                                 st.error(f"Error during Prophet cross-validation: {e}. Ensure sufficient data and model setup.")
+            else:
+                st.error("AI models are not ready. Please ensure you have sufficient data and the models are trained first.")
     else:
-            st.error("AI models are not ready. Please ensure you have sufficient data and the models are trained first.")
-else:
         st.info("Click 'Calculate Accuracy' to see how well the AI performs on past data.")
