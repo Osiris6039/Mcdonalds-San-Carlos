@@ -43,8 +43,8 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 def initialize_firebase_client():
     """Initializes Firebase Admin SDK and authenticates user."""
     
-    # Attempt to get the Firebase service account from Streamlit secrets.
-    # It *should* be a dictionary with dotted notation, but we'll handle other cases defensively.
+    # Get the Firebase service account from Streamlit secrets.
+    # When using dotted notation in secrets.toml, this should return a Streamlit AttrDict.
     firebase_secret_value = st.secrets.get('firebase_service_account')
     
     # Use getattr for app_id and initial_auth_token as they are still runtime injections
@@ -53,30 +53,30 @@ def initialize_firebase_client():
 
     firebase_config = None # Initialize to None
 
-    if isinstance(firebase_secret_value, dict):
-        # Case 1: Streamlit correctly parsed it as a dictionary (ideal scenario)
-        firebase_config = firebase_secret_value
+    # --- NEW, MORE ROBUST HANDLING OF firebase_secret_value ---
+    if firebase_secret_value is None:
+        st.error("Firebase service account configuration not found in Streamlit secrets.")
+        st.info("Please go to your Streamlit Cloud app settings -> Secrets, and add your Firebase service account JSON under the key 'firebase_service_account' using dotted notation.")
+        return None, None, None
     elif isinstance(firebase_secret_value, str):
-        # Case 2: Streamlit returned it as a string (e.g., if you used triple quotes """{...}""")
-        # Try to parse this string as JSON
+        # Fallback for if it's accidentally still a raw JSON string
         try:
             firebase_config = json.loads(firebase_secret_value)
         except json.JSONDecodeError as e:
             st.error(f"Error parsing Firebase service account string from secrets as JSON: {e}")
             st.info("Please ensure the content of 'firebase_service_account' in your Streamlit secrets is valid JSON, if it's being read as a string.")
             return None, None, None
-    elif firebase_secret_value is None:
-        # Case 3: Secret not found at all
-        st.error("Firebase service account configuration not found in Streamlit secrets.")
-        st.info("Please go to your Streamlit Cloud app settings -> Secrets, and add your Firebase service account JSON under the key 'firebase_service_account'.")
-        return None, None, None
     else:
-        # Case 4: Unexpected type from st.secrets
-        st.error(f"Unexpected type for 'firebase_service_account' secret: {type(firebase_secret_value)}. Expected dict or string.")
-        st.info("Please verify the formatting of your 'firebase_service_account' secret in Streamlit Cloud.")
-        return None, None, None
+        # This should handle Streamlit's AttrDict (which acts like a dict)
+        # We explicitly convert it to a standard Python dict for credentials.Certificate()
+        try:
+            firebase_config = dict(firebase_secret_value)
+        except Exception as e:
+            st.error(f"Error converting Streamlit secret to dictionary: {e}")
+            st.info("Please verify the structure of your 'firebase_service_account' secret in Streamlit Cloud.")
+            return None, None, None
 
-    # After the above checks, if firebase_config is still not a dictionary, it's an issue
+    # Final check that firebase_config is indeed a dictionary before proceeding
     if not isinstance(firebase_config, dict) or not firebase_config:
         st.error("Firebase service account configuration is not a valid dictionary after processing secrets.")
         st.info("This indicates an issue with the secret content or Streamlit's secrets management. Please double-check your 'firebase_service_account' secret in Streamlit Cloud.")
@@ -85,7 +85,7 @@ def initialize_firebase_client():
     try:
         # Check if Firebase app is already initialized
         if not firebase_admin._apps:
-            cred = credentials.Certificate(firebase_config) # firebase_config is now guaranteed to be a dict
+            cred = credentials.Certificate(firebase_config) # firebase_config is now guaranteed to be a standard dict
             initialize_app(cred) # No need for projectId here, it's in the creds
         
         db = firestore.client()
