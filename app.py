@@ -12,11 +12,11 @@ from prophet import Prophet
 from prophet.diagnostics import cross_validation, performance_metrics
 from prophet.plot import plot_cross_validation_metric
 import logging
-import json # Ensure json is imported
+import json 
 
 # Firebase Imports
 import firebase_admin 
-from firebase_admin import credentials, initialize_app # Corrected import here
+from firebase_admin import credentials, initialize_app 
 from firebase_admin import firestore
 from firebase_admin import auth
 
@@ -60,7 +60,6 @@ def initialize_firebase_client():
         return None, None, None
     elif isinstance(firebase_secret_value, str):
         # This branch is for backward compatibility if the user somehow reverted to a single string JSON.
-        # However, with dotted notation, this should not be the case.
         try:
             firebase_config = json.loads(firebase_secret_value)
         except json.JSONDecodeError as e:
@@ -83,10 +82,19 @@ def initialize_firebase_client():
         st.info("This indicates a fundamental issue with the secret content or Streamlit's secrets management. Please double-check your 'firebase_service_account' secret in Streamlit Cloud.")
         return None, None, None
 
+    # --- START OF NEW PRIVATE KEY HANDLING ---
+    if 'private_key' in firebase_config and isinstance(firebase_config['private_key'], str):
+        # The triple-quoted string in TOML includes literal newlines.
+        # However, sometimes SDKs are finicky. Let's ensure the newlines are standard '\n'.
+        # This line explicitly replaces any potential escaped newlines with actual newline characters.
+        # For triple-quoted strings, this might not be strictly necessary, but it acts as a safeguard.
+        firebase_config['private_key'] = firebase_config['private_key'].replace('\\n', '\n')
+    # --- END OF NEW PRIVATE KEY HANDLING ---
+
     try:
         # Check if Firebase app is already initialized
         if not firebase_admin._apps:
-            # firebase_config is now guaranteed to be a standard Python dict
+            # firebase_config is now guaranteed to be a standard Python dict with corrected private_key
             cred = credentials.Certificate(firebase_config) 
             initialize_app(cred) 
         
