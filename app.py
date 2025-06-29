@@ -43,22 +43,31 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 def initialize_firebase_client():
     """Initializes Firebase Admin SDK and authenticates user."""
     
-    # Access Firebase service account from Streamlit secrets
-    firebase_config = st.secrets.get('firebase_service_account')
+    # Access Firebase service account from Streamlit secrets as a string
+    firebase_config_str = st.secrets.get('firebase_service_account')
     
     # Use getattr for app_id and initial_auth_token as they are still runtime injections
     app_id = getattr(st, '__app_id', 'default-app-id')
     initial_auth_token = getattr(st, '__initial_auth_token', None)
 
-    if not firebase_config:
+    if not firebase_config_str:
         st.error("Firebase service account configuration not found in Streamlit secrets.")
         st.info("Please go to your Streamlit Cloud app settings -> Secrets, and add your Firebase service account JSON under the key 'firebase_service_account'.")
         return None, None, None
 
+    # --- NEW: Parse the string into a Python dictionary ---
+    try:
+        firebase_config = json.loads(firebase_config_str)
+    except json.JSONDecodeError as e:
+        st.error(f"Error parsing Firebase service account JSON from secrets: {e}")
+        st.info("Please ensure the content of 'firebase_service_account' in your Streamlit secrets is valid JSON.")
+        return None, None, None
+    # --- END NEW ---
+
     try:
         # Check if Firebase app is already initialized
         if not firebase_admin._apps:
-            cred = credentials.Certificate(firebase_config)
+            cred = credentials.Certificate(firebase_config) # Now firebase_config is a dict
             initialize_app(cred) # No need for projectId here, it's in the creds
         
         db = firestore.client()
