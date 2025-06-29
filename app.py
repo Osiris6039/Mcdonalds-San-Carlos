@@ -12,7 +12,7 @@ from prophet import Prophet
 from prophet.diagnostics import cross_validation, performance_metrics
 from prophet.plot import plot_cross_validation_metric
 import logging
-import json # Ensure json is imported
+import json # Ensure json is imported (though no longer needed for loads here)
 
 # Firebase Imports
 import firebase_admin 
@@ -44,7 +44,7 @@ def initialize_firebase_client():
     """Initializes Firebase Admin SDK and authenticates user."""
     
     # Access Firebase service account from Streamlit secrets.
-    # Streamlit's st.secrets should now correctly parse this as a dictionary.
+    # With dotted key notation, st.secrets.get() should return a dictionary directly.
     firebase_config = st.secrets.get('firebase_service_account')
     
     # Use getattr for app_id and initial_auth_token as they are still runtime injections
@@ -54,15 +54,17 @@ def initialize_firebase_client():
     # Check if firebase_config is indeed a dictionary
     if not isinstance(firebase_config, dict) or not firebase_config:
         st.error("Firebase service account configuration not found or not a valid dictionary in Streamlit secrets.")
-        st.info("Please go to your Streamlit Cloud app settings -> Secrets, and ensure your Firebase service account JSON is correctly formatted under the key 'firebase_service_account' as a TOML table.")
+        st.info("Please go to your Streamlit Cloud app settings -> Secrets, and ensure your Firebase service account JSON is correctly formatted as a TOML table using dotted notation (e.g., firebase_service_account.type = ...).")
         return None, None, None
     
-    # If it's a dict, we no longer need json.loads()
-
+    # --- IMPORTANT: REMOVED json.loads() call here ---
+    # firebase_config is already a dictionary, so no need to parse it from a string.
+    # The previous TypeError was because json.loads was trying to operate on a dict.
+    
     try:
         # Check if Firebase app is already initialized
         if not firebase_admin._apps:
-            cred = credentials.Certificate(firebase_config) # firebase_config is already a dict
+            cred = credentials.Certificate(firebase_config) # firebase_config is now directly a dict
             initialize_app(cred) # No need for projectId here, it's in the creds
         
         db = firestore.client()
