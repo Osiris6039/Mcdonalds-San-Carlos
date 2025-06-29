@@ -44,7 +44,7 @@ def initialize_firebase_client():
     """Initializes Firebase Admin SDK and authenticates user."""
     
     # Get the Firebase service account from Streamlit secrets.
-    # When using dotted notation in secrets.toml, this should return a Streamlit AttrDict.
+    # When using dotted notation in secrets.toml, this will return a streamlit.runtime.secrets.AttrDict.
     firebase_secret_value = st.secrets.get('firebase_service_account')
     
     # Use getattr for app_id and initial_auth_token as they are still runtime injections
@@ -68,7 +68,7 @@ def initialize_firebase_client():
             st.info("If your secret is formatted as a single JSON string, please ensure it's valid JSON. If using dotted notation, this error should not occur with the updated code.")
             return None, None, None
     else:
-        # This path is expected when using dotted notation, as Streamlit returns an AttrDict.
+        # This path is EXPECTED when using dotted notation, as Streamlit returns an AttrDict.
         # We explicitly convert it to a standard Python dict for firebase_admin.credentials.Certificate().
         try:
             firebase_config = dict(firebase_secret_value)
@@ -1020,7 +1020,7 @@ with tab1:
                         else:
                             st.error("Failed to delete record from Firestore.")
                     else:
-                        st.warning("Firebase not initialized. Cannot delete record.")
+                        st.sidebar.warning("Firebase not initialized. Cannot delete record.")
             else:
                 st.info("No sales records available in this month for editing or deletion.")
 
