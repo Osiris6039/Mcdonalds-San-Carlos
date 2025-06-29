@@ -1027,7 +1027,7 @@ with tab1:
         else:
             st.info("No historical data available to browse by month.")
     else:
-        st.info("No data manually entered or updated yet. Input new records above!")
+        st.info("No historical data available to browse by month.")
 
 
 with tab2:
