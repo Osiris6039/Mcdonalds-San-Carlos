@@ -43,58 +43,37 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 def initialize_firebase_client():
     """Initializes Firebase Admin SDK and authenticates user."""
     
-    # Get the Firebase service account from Streamlit secrets.
-    # When using dotted notation in secrets.toml, this will return a streamlit.runtime.secrets.AttrDict.
-    firebase_secret_value = st.secrets.get('firebase_service_account')
-    
     # Use getattr for app_id and initial_auth_token as they are still runtime injections
     app_id = getattr(st, '__app_id', 'default-app-id')
     initial_auth_token = getattr(st, '__initial_auth_token', None)
 
-    firebase_config = None # Initialize to None
-
-    # Handle various possible types for firebase_secret_value
-    if firebase_secret_value is None:
-        st.error("Firebase service account configuration not found in Streamlit secrets.")
-        st.info("Please go to your Streamlit Cloud app settings -> Secrets, and add your Firebase service account JSON using dotted notation (e.g., `firebase_service_account.type = '...'`).")
+    # --- CRITICAL CHANGE: Access secrets directly using full dotted paths ---
+    try:
+        firebase_config = {
+            "type": st.secrets["firebase_service_account.type"],
+            "project_id": st.secrets["firebase_service_account.project_id"],
+            "private_key_id": st.secrets["firebase_service_account.private_key_id"],
+            "private_key": st.secrets["firebase_service_account.private_key"],
+            "client_email": st.secrets["firebase_service_account.client_email"],
+            "client_id": st.secrets["firebase_service_account.client_id"],
+            "auth_uri": st.secrets["firebase_service_account.auth_uri"],
+            "token_uri": st.secrets["firebase_service_account.token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["firebase_service_account.auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["firebase_service_account.client_x509_cert_url"],
+            "universe_domain": st.secrets["firebase_service_account.universe_domain"]
+        }
+    except KeyError as e:
+        st.error(f"Missing Firebase secret key: {e}. Please ensure all parts of your 'firebase_service_account' are correctly defined in Streamlit secrets.toml using dotted notation.")
+        st.info("Example: `firebase_service_account.type = 'service_account'`")
         return None, None, None
-    elif isinstance(firebase_secret_value, str):
-        # This branch is for backward compatibility if the user somehow reverted to a single string JSON.
-        try:
-            firebase_config = json.loads(firebase_secret_value)
-        except json.JSONDecodeError as e:
-            st.error(f"Error parsing Firebase service account string from secrets as JSON: {e}")
-            st.info("If your secret is formatted as a single JSON string, please ensure it's valid JSON. If using dotted notation, this error should not occur with the updated code.")
-            return None, None, None
-    else:
-        # This path is EXPECTED when using dotted notation, as Streamlit returns an AttrDict.
-        # We explicitly convert it to a standard Python dict for firebase_admin.credentials.Certificate().
-        try:
-            firebase_config = dict(firebase_secret_value)
-        except Exception as e:
-            st.error(f"Error converting Streamlit secret object to dictionary: {e}")
-            st.info("This usually means the secret is not a dictionary-like structure. Please ensure 'firebase_service_account' is correctly structured in your Streamlit secrets using dotted notation.")
-            return None, None, None
-
-    # Final validation that we indeed have a dictionary
-    if not isinstance(firebase_config, dict) or not firebase_config:
-        st.error("Firebase service account configuration is not a valid dictionary after processing secrets.")
-        st.info("This indicates a fundamental issue with the secret content or Streamlit's secrets management. Please double-check your 'firebase_service_account' secret in Streamlit Cloud.")
+    except Exception as e:
+        st.error(f"An unexpected error occurred while accessing Streamlit secrets: {e}")
         return None, None, None
-
-    # --- START OF NEW PRIVATE KEY HANDLING ---
-    if 'private_key' in firebase_config and isinstance(firebase_config['private_key'], str):
-        # The triple-quoted string in TOML includes literal newlines.
-        # However, sometimes SDKs are finicky. Let's ensure the newlines are standard '\n'.
-        # This line explicitly replaces any potential escaped newlines with actual newline characters.
-        # For triple-quoted strings, this might not be strictly necessary, but it acts as a safeguard.
-        firebase_config['private_key'] = firebase_config['private_key'].replace('\\n', '\n')
-    # --- END OF NEW PRIVATE KEY HANDLING ---
+    # --- END CRITICAL CHANGE ---
 
     try:
         # Check if Firebase app is already initialized
         if not firebase_admin._apps:
-            # firebase_config is now guaranteed to be a standard Python dict with corrected private_key
             cred = credentials.Certificate(firebase_config) 
             initialize_app(cred) 
         
