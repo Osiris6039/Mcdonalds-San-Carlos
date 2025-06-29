@@ -1283,4 +1283,4 @@
                                     st.error(f"Error during Prophet cross-validation: {e}. Ensure sufficient data and model setup.")
         else:
             st.info("Click 'Calculate Accuracy' to see how well the AI performs on past data.")
-    ```
+    
