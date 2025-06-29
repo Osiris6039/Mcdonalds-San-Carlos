@@ -12,7 +12,7 @@ from prophet import Prophet
 from prophet.diagnostics import cross_validation, performance_metrics
 from prophet.plot import plot_cross_validation_metric
 import logging
-import json # Ensure json is imported
+import json # Ensure json is imported (even if not explicitly used for loads() in the primary path)
 
 # Firebase Imports
 import firebase_admin 
@@ -43,33 +43,52 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 def initialize_firebase_client():
     """Initializes Firebase Admin SDK and authenticates user."""
     
-    # Access Firebase service account from Streamlit secrets as a string
-    # This assumes the ENTIRE JSON is stored as a single string value in secrets.toml
-    firebase_config_str = st.secrets.get('firebase_service_account')
+    # Get the Firebase service account from Streamlit secrets.
+    # When using dotted notation in secrets.toml, this should return a Streamlit AttrDict.
+    firebase_secret_value = st.secrets.get('firebase_service_account')
     
     # Use getattr for app_id and initial_auth_token as they are still runtime injections
     app_id = getattr(st, '__app_id', 'default-app-id')
     initial_auth_token = getattr(st, '__initial_auth_token', None)
 
-    if not firebase_config_str:
-        st.error("Firebase service account configuration not found in Streamlit secrets, or it's empty.")
-        st.info("Please go to your Streamlit Cloud app settings -> Secrets, and ensure your Firebase service account JSON is stored as a single string under the key 'firebase_service_account'.")
-        return None, None, None
+    firebase_config = None # Initialize to None
 
-    # --- CRITICAL: Parse the string into a Python dictionary ---
-    try:
-        firebase_config = json.loads(firebase_config_str)
-    except json.JSONDecodeError as e:
-        st.error(f"Error parsing Firebase service account JSON string from secrets: {e}")
-        st.info("Please ensure the content of 'firebase_service_account' in your Streamlit secrets is a single, valid JSON string.")
+    # Handle various possible types for firebase_secret_value
+    if firebase_secret_value is None:
+        st.error("Firebase service account configuration not found in Streamlit secrets.")
+        st.info("Please go to your Streamlit Cloud app settings -> Secrets, and add your Firebase service account JSON using dotted notation (e.g., `firebase_service_account.type = '...'`).")
         return None, None, None
-    # --- END CRITICAL ---
+    elif isinstance(firebase_secret_value, str):
+        # This branch is for backward compatibility if the user somehow reverted to a single string JSON.
+        # However, with dotted notation, this should not be the case.
+        try:
+            firebase_config = json.loads(firebase_secret_value)
+        except json.JSONDecodeError as e:
+            st.error(f"Error parsing Firebase service account string from secrets as JSON: {e}")
+            st.info("If your secret is formatted as a single JSON string, please ensure it's valid JSON. If using dotted notation, this error should not occur with the updated code.")
+            return None, None, None
+    else:
+        # This path is expected when using dotted notation, as Streamlit returns an AttrDict.
+        # We explicitly convert it to a standard Python dict for firebase_admin.credentials.Certificate().
+        try:
+            firebase_config = dict(firebase_secret_value)
+        except Exception as e:
+            st.error(f"Error converting Streamlit secret object to dictionary: {e}")
+            st.info("This usually means the secret is not a dictionary-like structure. Please ensure 'firebase_service_account' is correctly structured in your Streamlit secrets using dotted notation.")
+            return None, None, None
+
+    # Final validation that we indeed have a dictionary
+    if not isinstance(firebase_config, dict) or not firebase_config:
+        st.error("Firebase service account configuration is not a valid dictionary after processing secrets.")
+        st.info("This indicates a fundamental issue with the secret content or Streamlit's secrets management. Please double-check your 'firebase_service_account' secret in Streamlit Cloud.")
+        return None, None, None
 
     try:
         # Check if Firebase app is already initialized
         if not firebase_admin._apps:
-            cred = credentials.Certificate(firebase_config) # Now firebase_config is a dict
-            initialize_app(cred) # No need for projectId here, it's in the creds
+            # firebase_config is now guaranteed to be a standard Python dict
+            cred = credentials.Certificate(firebase_config) 
+            initialize_app(cred) 
         
         db = firestore.client()
         
@@ -79,19 +98,19 @@ def initialize_firebase_client():
             try:
                 decoded_token = auth.verify_id_token(initial_auth_token)
                 current_user_id = decoded_token['uid']
-                st.sidebar.success(f"Authenticated with Firebase. User ID: `{current_user_id}`") # Moved to sidebar for less clutter
+                st.sidebar.success(f"Authenticated with Firebase. User ID: `{current_user_id}`") 
             except Exception as auth_e:
                 st.sidebar.error(f"Authentication token verification failed: {auth_e}")
-                st.sidebar.info("Falling back to anonymous user ID.")
+                st.sidebar.info("Falling back to anonymous user ID. If this persists, verify your token or Firebase project settings.")
                 current_user_id = "anonymous_user_id"
         else:
             st.sidebar.warning("No initial auth token found. Using anonymous user ID. Data might not be private per user in collaborative contexts.")
-            current_user_id = "anonymous_user_id" # Fallback if no token (less secure for prod)
+            current_user_id = "anonymous_user_id" 
 
         return db, current_user_id, app_id
     except Exception as e:
         st.error(f"Error initializing Firebase or authenticating: {e}")
-        st.info("Please ensure your Firebase service account key is valid and correctly formatted in Streamlit secrets.")
+        st.info("Please ensure your Firebase service account key is valid and correctly formatted in Streamlit secrets. Also, verify your Firebase project settings (e.g., enabled APIs).")
         return None, None, None
 
 db, USER_ID, APP_ID = initialize_firebase_client()
