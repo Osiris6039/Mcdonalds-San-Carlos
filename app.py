@@ -12,11 +12,11 @@ from prophet import Prophet
 from prophet.diagnostics import cross_validation, performance_metrics
 from prophet.plot import plot_cross_validation_metric
 import logging
-import json # Ensure json is imported
+import json 
 
 # Firebase Imports
 import firebase_admin 
-from firebase_admin import credentials, initialize_app # Corrected import here
+from firebase_admin import credentials, initialize_app 
 from firebase_admin import firestore
 from firebase_admin import auth
 
@@ -43,51 +43,51 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 def initialize_firebase_client():
     """Initializes Firebase Admin SDK and authenticates user."""
     
-    # Get the Firebase service account from Streamlit secrets.
-    # When using dotted notation in secrets.toml, this will return a streamlit.runtime.secrets.AttrDict.
-    firebase_secret_value = st.secrets.get('firebase_service_account')
-    
     # Use getattr for app_id and initial_auth_token as they are still runtime injections
     app_id = getattr(st, '__app_id', 'default-app-id')
     initial_auth_token = getattr(st, '__initial_auth_token', None)
 
-    firebase_config = None # Initialize to None
+    # Access secrets directly using full dotted paths
+    try:
+        # Construct the raw firebase_config dictionary from Streamlit secrets
+        raw_firebase_config = {
+            "type": st.secrets["firebase_service_account.type"],
+            "project_id": st.secrets["firebase_service_account.project_id"],
+            "private_key_id": st.secrets["firebase_service_account.private_key_id"],
+            "private_key": st.secrets["firebase_service_account.private_key"], # This is the key we'll process
+            "client_email": st.secrets["firebase_service_account.client_email"],
+            "client_id": st.secrets["firebase_service_account.client_id"],
+            "auth_uri": st.secrets["firebase_service_account.auth_uri"],
+            "token_uri": st.secrets["firebase_service_account.token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["firebase_service_account.auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["firebase_service_account.client_x509_cert_url"],
+            "universe_domain": st.secrets["firebase_service_account.universe_domain"]
+        }
+        
+        # --- NEW/ADJUSTED PRIVATE KEY PROCESSING ---
+        # Ensure the private_key has literal newline characters (\n)
+        # Some environments/SDKs are finicky with multi-line strings from TOML.
+        # This explicitly replaces any common variations of newlines or escaped newlines
+        # with the standard Python \n character, which Firebase Admin SDK expects.
+        if isinstance(raw_firebase_config['private_key'], str):
+            processed_private_key = raw_firebase_config['private_key'].replace('\\n', '\n').replace('\r\n', '\n').replace('\r', '\n')
+            # The replace('\r', '\n') at the end ensures any lone carriage returns are also handled.
+            raw_firebase_config['private_key'] = processed_private_key
+        # --- END NEW/ADJUSTED PRIVATE KEY PROCESSING ---
 
-    # Handle various possible types for firebase_secret_value
-    if firebase_secret_value is None:
-        st.error("Firebase service account configuration not found in Streamlit secrets.")
-        st.info("Please go to your Streamlit Cloud app settings -> Secrets, and add your Firebase service account JSON using dotted notation (e.g., `firebase_service_account.type = '...'`).")
+    except KeyError as e:
+        st.error(f"Missing Firebase secret key: {e}. Please ensure all parts of your 'firebase_service_account' are correctly defined in Streamlit secrets.toml using dotted notation.")
+        st.info("Example: `firebase_service_account.type = 'service_account'`")
         return None, None, None
-    elif isinstance(firebase_secret_value, str):
-        # This branch is for backward compatibility if the user somehow reverted to a single string JSON.
-        # However, with dotted notation, this should not be the case.
-        try:
-            firebase_config = json.loads(firebase_secret_value)
-        except json.JSONDecodeError as e:
-            st.error(f"Error parsing Firebase service account string from secrets as JSON: {e}")
-            st.info("If your secret is formatted as a single JSON string, please ensure it's valid JSON. If using dotted notation, this error should not occur with the updated code.")
-            return None, None, None
-    else:
-        # This path is EXPECTED when using dotted notation, as Streamlit returns an AttrDict.
-        # We explicitly convert it to a standard Python dict for firebase_admin.credentials.Certificate().
-        try:
-            firebase_config = dict(firebase_secret_value)
-        except Exception as e:
-            st.error(f"Error converting Streamlit secret object to dictionary: {e}")
-            st.info("This usually means the secret is not a dictionary-like structure. Please ensure 'firebase_service_account' is correctly structured in your Streamlit secrets using dotted notation.")
-            return None, None, None
-
-    # Final validation that we indeed have a dictionary
-    if not isinstance(firebase_config, dict) or not firebase_config:
-        st.error("Firebase service account configuration is not a valid dictionary after processing secrets.")
-        st.info("This indicates a fundamental issue with the secret content or Streamlit's secrets management. Please double-check your 'firebase_service_account' secret in Streamlit Cloud.")
+    except Exception as e:
+        st.error(f"An unexpected error occurred while accessing Streamlit secrets: {e}")
         return None, None, None
 
     try:
         # Check if Firebase app is already initialized
         if not firebase_admin._apps:
-            # firebase_config is now guaranteed to be a standard Python dict
-            cred = credentials.Certificate(firebase_config) 
+            # Pass the processed raw_firebase_config to credentials.Certificate
+            cred = credentials.Certificate(raw_firebase_config) 
             initialize_app(cred) 
         
         db = firestore.client()
@@ -1027,7 +1027,7 @@ with tab1:
         else:
             st.info("No historical data available to browse by month.")
     else:
-        st.info("No historical data available to browse by month.")
+        st.info("No data manually entered or updated yet. Input new records above!")
 
 
 with tab2:
@@ -1041,8 +1041,8 @@ with tab2:
     weather_options = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
 
     if not st.session_state.future_weather_inputs or \
-       any(item['date'] not in forecast_dates_for_weather for item in st.session_state.future_weather_inputs) or \
-       len(st.session_state.future_weather_inputs) != 10:
+    any(item['date'] not in forecast_dates_for_weather for item in st.session_state.future_weather_inputs) or \
+    len(st.session_state.future_weather_inputs) != 10:
         st.session_state.future_weather_inputs = [{'date': d, 'weather': 'Sunny'} for d in forecast_dates_for_weather]
 
     weather_inputs_edited = []
@@ -1065,7 +1065,7 @@ with tab2:
         if st.session_state.sales_data.empty or st.session_state.sales_data.shape[0] < 2:
             st.warning("Please enter at least 2 days of sales data to generate a meaningful forecast.")
         elif st.session_state.sales_model is None or st.session_state.customers_model is None:
-             st.warning("AI models are not ready. Please ensure you have sufficient data and the models are trained.")
+            st.warning("AI models are not ready. Please ensure you have sufficient data and the models are trained.")
         else:
             with st.spinner(f"Generating forecast using {st.session_state.model_type}... This might take a moment as the AI thinks ahead!"):
                 if st.session_state.model_type == "RandomForest":
@@ -1149,7 +1149,7 @@ with tab3:
         elif st.session_state.sales_data.shape[0] < 2:
             st.warning("Please enter at least 2 days of sales data to calculate accuracy.")
         elif st.session_state.sales_model is None or st.session_state.customers_model is None:
-             st.warning("AI models are not ready. Please ensure you have sufficient data and the models are trained first.")
+            st.warning("AI models are not ready. Please ensure you have sufficient data and the models are trained first.")
         else:
             with st.spinner(f"Calculating accuracy using {st.session_state.model_type}... This may take a moment."):
                 if st.session_state.model_type == "RandomForest":
@@ -1249,7 +1249,7 @@ with tab3:
                         elif sales_prophet_df_cv['y'].sum() == 0 and len(sales_prophet_df_cv['y']) > 0:
                             st.warning("Prophet cross-validation cannot run with sales data consisting only of zeros. Please input non-zero values.")
                         elif customers_prophet_df_cv['y'].sum() == 0 and len(customers_prophet_df_cv['y']) > 0:
-                             st.warning("Prophet cross-validation cannot run with customer data consisting only of zeros. Please input non-zero values.")
+                            st.warning("Prophet cross-validation cannot run with customer data consisting only of zeros. Please input non-zero values.")
                         else:
                             try:
                                 with st.spinner("Performing cross-validation for Sales model..."):
@@ -1295,5 +1295,5 @@ with tab3:
 
                             except Exception as e:
                                 st.error(f"Error during Prophet cross-validation: {e}. Ensure sufficient data and model setup.")
-    else:
-        st.info("Click 'Calculate Accuracy' to see how well the AI performs on past data.")
+        else:
+            st.info("Click 'Calculate Accuracy' to see how well the AI performs on past data.")
