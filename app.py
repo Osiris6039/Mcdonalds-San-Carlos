@@ -12,11 +12,11 @@ from prophet import Prophet
 from prophet.diagnostics import cross_validation, performance_metrics
 from prophet.plot import plot_cross_validation_metric
 import logging
-import json # Ensure json is imported (even if not explicitly used for loads() in the primary path)
+import json # Ensure json is imported
 
 # Firebase Imports
 import firebase_admin 
-from firebase_admin import credentials, initialize_app
+from firebase_admin import credentials, initialize_app # Corrected import here
 from firebase_admin import firestore
 from firebase_admin import auth
 
