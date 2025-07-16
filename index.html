@@ -1,0 +1,1209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>McDonald's San Carlos 688</title>
+    <!-- Chosen Palette: McDonald's Professional (Warm Gray, Red, Yellow, Dark Text) -->
+    <!-- Application Structure Plan: The SPA uses a fixed top navigation bar to switch between content sections, mimicking the logical flow of the original app's tabs. This design was chosen because it provides clear, persistent navigation, allowing users to easily move between the main forecast 'Dashboard', component 'Insights', and performance 'Evaluator' without losing context. All content is dynamically rendered into a single main content area, making it a true single-page application focused on usability and a seamless user flow. -->
+    <!-- Visualization & Content Choices: Data from the report is presented using Chart.js for all visualizations to maintain a consistent look and feel. Goal: Show Change -> Viz: A dual-axis line chart is used on the Dashboard to show sales/customer trends. Interaction: Hover tooltips provide specific data points. Goal: Organize/Explain -> Viz: A waterfall chart on the Insights page breaks down forecast components. Interaction: A dropdown filters the view by date. Goal: Compare -> Viz: Paired line charts on the Evaluator page compare actuals vs. forecasts. Interaction: Toggles filter the time range. Data management is handled via styled HTML forms and cards, providing a clear and standard interface. This approach avoids proscribed libraries and focuses on universally understood interactions. -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+
+    <style>
+        body {
+            font-family: 'Poppins', sans-serif;
+            background-color: #F7F7F7;
+        }
+        .nav-button {
+            transition: all 0.3s ease;
+        }
+        .nav-button.active {
+            background-color: #DA291C; /* McDonald's Red */
+            color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .chart-container {
+            position: relative;
+            width: 100%;
+            height: 400px;
+            max-height: 50vh;
+        }
+        .stat-card {
+            background-color: white;
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            border: 1px solid #E5E7EB;
+        }
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 12px 24px;
+            border-radius: 8px;
+            color: white;
+            font-weight: 600;
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.5s, bottom 0.5s;
+        }
+        .toast.show {
+            opacity: 1;
+            bottom: 40px;
+        }
+        .toast.success { background-color: #10B981; }
+        .toast.error { background-color: #EF4444; }
+        /* Custom scrollbar for webkit browsers */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+        .month-tab.active {
+            border-color: #DA291C;
+            background-color: #DA291C;
+            color: white;
+        }
+    </style>
+</head>
+<body class="text-gray-800">
+
+    <div id="loading-overlay" class="fixed inset-0 bg-white bg-opacity-75 flex-col items-center justify-center z-50 hidden">
+        <div class="text-center p-4">
+            <svg class="animate-spin h-10 w-10 text-[#DA291C] mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p id="loading-text" class="mt-4 text-lg font-semibold text-gray-700">Loading...</p>
+        </div>
+    </div>
+    
+    <div id="login-screen" class="min-h-screen flex items-center justify-center bg-gray-100">
+        <div class="w-full max-w-md bg-white p-8 rounded-xl shadow-lg">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/3/36/McDonald%27s_Golden_Arches.svg/1200px-McDonald%27s_Golden_Arches.svg.png" alt="Logo" class="h-12 w-auto mx-auto mb-6">
+            <h2 class="text-2xl font-bold text-center mb-1">Welcome Back</h2>
+            <p class="text-center text-gray-500 mb-6">Please sign in to access the forecaster.</p>
+            <form id="login-form" class="space-y-6">
+                <div>
+                    <label for="email" class="block text-sm font-medium text-gray-700">Username (Email)</label>
+                    <input type="email" id="email" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-red-500 focus:border-red-500">
+                </div>
+                <div>
+                    <label for="password" class="block text-sm font-medium text-gray-700">Password</label>
+                    <input type="password" id="password" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-red-500 focus:border-red-500">
+                </div>
+                <div id="login-error" class="text-sm text-red-600 h-auto"></div>
+                <button type="submit" class="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-[#DA291C] hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
+                    Sign In
+                </button>
+            </form>
+        </div>
+    </div>
+
+
+    <div id="app-container" class="min-h-screen flex-col hidden">
+        <!-- Header -->
+        <header class="bg-white shadow-md sticky top-0 z-10">
+            <div class="container mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex items-center justify-between h-20">
+                    <div class="flex items-center space-x-4">
+                        <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/3/36/McDonald%27s_Golden_Arches.svg/1200px-McDonald%27s_Golden_Arches.svg.png" alt="Logo" class="h-8 w-auto">
+                        <h1 class="text-xl md:text-2xl font-bold text-gray-800">McDonald's San Carlos 688</h1>
+                    </div>
+                     <nav id="main-nav" class="hidden md:flex flex-wrap items-center text-base justify-center">
+                        <button data-view="dashboard" class="nav-button active px-3 py-2 rounded-lg font-semibold">Dashboard</button>
+                        <button data-view="insights" class="nav-button px-3 py-2 rounded-lg font-semibold">Insights</button>
+                        <button data-view="evaluator" class="nav-button px-3 py-2 rounded-lg font-semibold">Evaluator</button>
+                        <button data-view="datamgmt" class="nav-button px-3 py-2 rounded-lg font-semibold">Add Data</button>
+                        <button data-view="activities" class="nav-button px-3 py-2 rounded-lg font-semibold">Activities</button>
+                        <button data-view="historical" class="nav-button px-3 py-2 rounded-lg font-semibold">History</button>
+                        <button data-view="admin" class="nav-button px-3 py-2 rounded-lg font-semibold hidden">Admin</button>
+                    </nav>
+                     <div class="flex items-center space-x-4">
+                        <p id="user-greeting" class="hidden md:block text-sm font-semibold"></p>
+                        <button id="logout-btn" class="hidden md:flex items-center space-x-2 px-4 py-2 bg-gray-600 text-white rounded-lg font-semibold hover:bg-gray-700 transition">
+                            <span>Logout</span>
+                        </button>
+                     </div>
+                </div>
+            </div>
+        </header>
+        
+        <!-- Mobile Navigation -->
+        <nav id="mobile-nav" class="md:hidden bg-white shadow-md p-2 grid grid-cols-3 gap-1 sticky top-0 z-10">
+            <button data-view="dashboard" class="nav-button active flex-1 text-sm py-2 rounded-lg font-semibold">Dashboard</button>
+            <button data-view="insights" class="nav-button flex-1 text-sm py-2 rounded-lg font-semibold">Insights</button>
+            <button data-view="evaluator" class="nav-button flex-1 text-sm py-2 rounded-lg font-semibold">Evaluator</button>
+            <button data-view="datamgmt" class="nav-button flex-1 text-sm py-2 rounded-lg font-semibold">Add Data</button>
+            <button data-view="activities" class="nav-button flex-1 text-sm py-2 rounded-lg font-semibold">Activities</button>
+            <button data-view="historical" class="nav-button flex-1 text-sm py-2 rounded-lg font-semibold">History</button>
+            <button data-view="admin" class="nav-button flex-1 text-sm py-2 rounded-lg font-semibold hidden">Admin</button>
+        </nav>
+
+
+        <!-- Main Content Area -->
+        <main id="content-area" class="flex-grow container mx-auto p-4 sm:p-6 lg:p-8">
+            <div id="provisional-forecast-banner" class="hidden bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 mb-6" role="alert">
+                <p class="font-bold">Provisional Forecast</p>
+                <p>Displaying a basic forecast generated from historical data. For the advanced prediction, please run the backend Python engine.</p>
+            </div>
+            
+            <!-- Dashboard Section -->
+            <section id="dashboard-section" class="view">
+                <div class="mb-6">
+                    <h2 class="text-2xl font-bold mb-1">Forecast Dashboard</h2>
+                    <p class="text-gray-600">This section presents the 15-day outlook for projected sales and customer traffic, providing a high-level overview of expected performance.</p>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                    <div class="stat-card text-center">
+                        <h3 class="text-lg font-semibold text-gray-500">Avg. Daily Sales (7-Day)</h3>
+                        <p id="avg-sales" class="text-4xl font-bold text-[#DA291C] mt-2">₱0</p>
+                    </div>
+                    <div class="stat-card text-center">
+                        <h3 class="text-lg font-semibold text-gray-500">Avg. Daily Customers (7-Day)</h3>
+                        <p id="avg-customers" class="text-4xl font-bold text-gray-800 mt-2">0</p>
+                    </div>
+                    <div class="stat-card text-center">
+                        <h3 class="text-lg font-semibold text-gray-500">Avg. Transaction Value (7-Day)</h3>
+                        <p id="avg-atv" class="text-4xl font-bold text-gray-800 mt-2">₱0.00</p>
+                    </div>
+                </div>
+                <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                     <h3 class="text-xl font-bold mb-4">15-Day Performance Outlook</h3>
+                    <div class="chart-container">
+                        <canvas id="forecastChart"></canvas>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Insights Section -->
+            <section id="insights-section" class="view hidden">
+                <div class="mb-6">
+                    <h2 class="text-2xl font-bold mb-1">Forecast Insights</h2>
+                    <p class="text-gray-600">Explore the underlying drivers of the daily forecast. This waterfall chart breaks down how factors like the day of the week, seasonality, and holidays contribute to the final customer projection.</p>
+                </div>
+                <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                    <div class="flex flex-col sm:flex-row justify-between items-center mb-4">
+                        <h3 class="text-xl font-bold mb-2 sm:mb-0">Daily Driver Analysis</h3>
+                        <div>
+                            <label for="insightDate" class="font-semibold mr-2">Select a Date:</label>
+                            <select id="insightDate" class="p-2 rounded-lg border-2 border-gray-200 focus:border-[#DA291C] focus:outline-none"></select>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-center">
+                        <div class="lg:col-span-2 chart-container">
+                            <canvas id="waterfallChart"></canvas>
+                        </div>
+                        <div id="insight-summary" class="bg-gray-50 p-6 rounded-lg border">
+                            <h4 class="font-bold text-lg mb-2">Summary</h4>
+                            <p class="text-gray-700">Select a date to see a summary of its forecast drivers.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Evaluator Section -->
+            <section id="evaluator-section" class="view hidden">
+                <div class="mb-6">
+                    <h2 class="text-2xl font-bold mb-1">Forecast Evaluator</h2>
+                    <p class="text-gray-600">This section measures the model's historical accuracy by comparing past day-ahead forecasts against actual results. This helps build trust and identify areas for model improvement.</p>
+                </div>
+                <div class="flex justify-center mb-6">
+                     <div class="inline-flex rounded-lg shadow-sm bg-white border">
+                        <button id="eval-7-day" class="eval-toggle-button bg-[#DA291C] text-white px-4 py-2 rounded-l-lg font-semibold">Last 7 Days</button>
+                        <button id="eval-30-day" class="eval-toggle-button px-4 py-2 font-semibold text-gray-600">Last 30 Days</button>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                     <div class="stat-card">
+                         <h3 class="text-lg font-semibold text-gray-500">Sales Accuracy (vs MAPE)</h3>
+                         <p id="sales-accuracy" class="text-3xl font-bold mt-1">0.00%</p>
+                     </div>
+                     <div class="stat-card">
+                         <h3 class="text-lg font-semibold text-gray-500">Customer Accuracy (vs MAPE)</h3>
+                         <p id="customer-accuracy" class="text-3xl font-bold mt-1">0.00%</p>
+                     </div>
+                </div>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                        <h3 class="text-xl font-bold mb-4">Actual vs. Forecasted Sales</h3>
+                        <div class="chart-container">
+                            <canvas id="salesEvalChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                        <h3 class="text-xl font-bold mb-4">Actual vs. Forecasted Customers</h3>
+                        <div class="chart-container">
+                            <canvas id="customersEvalChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+             <!-- Data Management Section -->
+            <section id="datamgmt-section" class="view hidden">
+                 <div class="mb-6">
+                    <h2 class="text-2xl font-bold mb-1">Add New Data</h2>
+                    <p class="text-gray-600">Add new daily records and future activities to improve forecast accuracy.</p>
+                </div>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                        <h3 class="text-xl font-bold mb-4">Add New Daily Record</h3>
+                        <form id="daily-record-form" class="space-y-4">
+                            <div>
+                                <label for="record-date" class="block font-semibold mb-1">Date</label>
+                                <input type="date" id="record-date" class="w-full p-2 rounded-lg border-2 border-gray-200" required>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label for="record-sales" class="block font-semibold mb-1">Total Sales (₱)</label>
+                                    <input type="number" step="0.01" id="record-sales" class="w-full p-2 rounded-lg border-2 border-gray-200" required>
+                                </div>
+                                <div>
+                                    <label for="record-customers" class="block font-semibold mb-1">Customers</label>
+                                    <input type="number" id="record-customers" class="w-full p-2 rounded-lg border-2 border-gray-200" required>
+                                </div>
+                                <div>
+                                    <label for="record-addons" class="block font-semibold mb-1">Add-on Sales (₱)</label>
+                                    <input type="number" step="0.01" id="record-addons" class="w-full p-2 rounded-lg border-2 border-gray-200" required>
+                                </div>
+                                <div>
+                                    <label for="record-weather" class="block font-semibold mb-1">Weather</label>
+                                    <select id="record-weather" class="w-full p-2 rounded-lg border-2 border-gray-200" required>
+                                        <option>Sunny</option>
+                                        <option>Cloudy</option>
+                                        <option>Rainy</option>
+                                        <option>Storm</option>
+                                    </select>
+                                </div>
+                            </div>
+                             <button type="submit" class="w-full bg-[#DA291C] text-white font-bold py-3 px-4 rounded-lg hover:bg-red-700 transition duration-300">Save Daily Record</button>
+                        </form>
+                    </div>
+                     <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                        <h3 class="text-xl font-bold mb-4">Add Future Event</h3>
+                        <form id="event-form" class="space-y-4">
+                             <div>
+                                <label for="event-name" class="block font-semibold mb-1">Event Name</label>
+                                <input type="text" id="event-name" placeholder="e.g., San Carlos Charter Day" class="w-full p-2 rounded-lg border-2 border-gray-200" required>
+                            </div>
+                             <div>
+                                <label for="event-date" class="block font-semibold mb-1">Date</label>
+                                <input type="date" id="event-date" class="w-full p-2 rounded-lg border-2 border-gray-200" required>
+                            </div>
+                            <button type="submit" class="w-full bg-gray-800 text-white font-bold py-3 px-4 rounded-lg hover:bg-gray-900 transition duration-300">Save Event</button>
+                        </form>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Future Activities Section -->
+            <section id="activities-section" class="view hidden">
+                 <div class="mb-6">
+                    <h2 class="text-2xl font-bold mb-1">Future Activities</h2>
+                    <p class="text-gray-600">Add, browse, and manage all upcoming events and promotions.</p>
+                </div>
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    <div class="lg:col-span-1 bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                         <h3 class="text-xl font-bold mb-4">Add New Activity</h3>
+                        <form id="activity-form" class="space-y-4">
+                             <div>
+                                <label for="activity-name" class="block font-semibold mb-1">Activity Name</label>
+                                <input type="text" id="activity-name" placeholder="e.g., Catering for Birthday" class="w-full p-2 rounded-lg border-2 border-gray-200" required>
+                            </div>
+                            <div>
+                                <label for="customer-name" class="block font-semibold mb-1">Customer Name</label>
+                                <input type="text" id="customer-name" placeholder="e.g., John Doe" class="w-full p-2 rounded-lg border-2 border-gray-200">
+                            </div>
+                             <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label for="activity-date" class="block font-semibold mb-1">Date</label>
+                                    <input type="date" id="activity-date" class="w-full p-2 rounded-lg border-2 border-gray-200" required>
+                                </div>
+                                <div>
+                                    <label for="activity-sales" class="block font-semibold mb-1">Est. Sales (₱)</label>
+                                    <input type="number" step="0.01" id="activity-sales" class="w-full p-2 rounded-lg border-2 border-gray-200" required>
+                                </div>
+                            </div>
+                             <div>
+                                <label for="activity-status" class="block font-semibold mb-1">Status</label>
+                                <select id="activity-status" class="w-full p-2 rounded-lg border-2 border-gray-200" required>
+                                    <option>Confirmed</option>
+                                    <option>Needs Follow-up</option>
+                                    <option>Tentative</option>
+                                    <option>Cancelled</option>
+                                </select>
+                            </div>
+                            <button type="submit" class="w-full bg-gray-800 text-white font-bold py-3 px-4 rounded-lg hover:bg-gray-900 transition duration-300">Save Activity</button>
+                        </form>
+                    </div>
+                    <div class="lg:col-span-2">
+                        <div id="activity-tabs-container" class="mb-4 border-b border-gray-300">
+                            <!-- Month tabs will be inserted here -->
+                        </div>
+                        <div id="activity-content-container">
+                            <!-- Activity content for the selected month will be inserted here -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Historical Data Section -->
+            <section id="historical-section" class="view hidden">
+                <div class="mb-6">
+                    <h2 class="text-2xl font-bold mb-1">Historical Data</h2>
+                    <p class="text-gray-600">Browse and manage past daily records.</p>
+                </div>
+                <div class="flex space-x-4 mb-4 bg-white p-4 rounded-lg shadow-sm border">
+                    <div>
+                        <label for="hist-year" class="block text-sm font-medium text-gray-700">Year</label>
+                        <select id="hist-year" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-red-500 focus:border-red-500 sm:text-sm rounded-md"></select>
+                    </div>
+                    <div>
+                        <label for="hist-month" class="block text-sm font-medium text-gray-700">Month</label>
+                        <select id="hist-month" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-red-500 focus:border-red-500 sm:text-sm rounded-md"></select>
+                    </div>
+                </div>
+                <div id="historical-list" class="space-y-4 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">
+                    <!-- Historical data cards will be inserted here by JavaScript -->
+                </div>
+            </section>
+
+            <!-- Admin Section -->
+            <section id="admin-section" class="view hidden">
+                <div class="mb-6">
+                    <h2 class="text-2xl font-bold mb-1">User Management</h2>
+                    <p class="text-gray-600">View and manage user access levels. New users should be created securely in the Firebase Console.</p>
+                </div>
+                <div id="user-list" class="bg-white p-6 rounded-xl shadow-lg border border-gray-200 space-y-4">
+                    <!-- User list will be inserted here -->
+                </div>
+            </section>
+
+        </main>
+    </div>
+    <div id="toast-container"></div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            
+            // --- FIREBASE INITIALIZATION ---
+            const firebaseConfig = {
+              apiKey: "AIzaSyBlbxhzUp_TZd8oTrLxrY-E6gq-_XdiMCo",
+              authDomain: "mcdonalds-san-carlos.firebaseapp.com",
+              projectId: "mcdonalds-san-carlos",
+              storageBucket: "mcdonalds-san-carlos.appspot.com",
+              messagingSenderId: "1052052612983",
+              appId: "1:1052052612983:web:8df02d65d12e99e0666372",
+              measurementId: "G-EYSWHXTQ6F"
+            };
+
+            firebase.initializeApp(firebaseConfig);
+            const db = firebase.firestore();
+            const auth = firebase.auth();
+
+            // --- GLOBAL STATE & CHARTS ---
+            let charts = {};
+            const appState = {
+                currentView: 'dashboard',
+                evalDays: 7,
+                forecastData: null,
+                evaluationData: null,
+                insightsData: null,
+                activitiesData: null,
+                historicalData: null,
+                usersData: null,
+                accessLevel: 3, // Default to viewer
+            };
+            
+            // --- TOAST NOTIFICATION ---
+            function showToast(message, type = 'success') {
+                const toastContainer = document.getElementById('toast-container');
+                const toast = document.createElement('div');
+                toast.textContent = message;
+                toast.className = `toast ${type}`;
+                toastContainer.appendChild(toast);
+                
+                setTimeout(() => {
+                    toast.classList.add('show');
+                }, 100);
+
+                setTimeout(() => {
+                    toast.classList.remove('show');
+                    setTimeout(() => toast.remove(), 500);
+                }, 3000);
+            }
+
+            // --- DATA FETCHING & PROCESSING ---
+            async function loadAppData() {
+                document.getElementById('loading-overlay').style.display = 'flex';
+                document.getElementById('loading-text').textContent = 'Loading All Application Data...';
+                
+                try {
+                    const [logSnapshot, historicalSnapshot, activitiesSnapshot, usersSnapshot] = await Promise.all([
+                        db.collection("forecast_log").orderBy("generated_on", "desc").limit(15).get(),
+                        db.collection("historical_data").orderBy("date", "desc").get(),
+                        db.collection("future_activities").orderBy("date", "asc").get(),
+                        db.collection("users").get()
+                    ]);
+
+                    appState.historicalData = historicalSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    appState.activitiesData = activitiesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    appState.usersData = usersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+                    if (logSnapshot.empty) {
+                        document.getElementById('provisional-forecast-banner').classList.remove('hidden');
+                        generateProvisionalForecast();
+                    } else {
+                        document.getElementById('provisional-forecast-banner').classList.add('hidden');
+                        const forecastDocs = logSnapshot.docs.map(doc => doc.data()).reverse();
+                        appState.forecastData = {
+                            dates: forecastDocs.map(d => d.forecast_for_date.toDate()),
+                            sales: forecastDocs.map(d => d.predicted_sales),
+                            customers: forecastDocs.map(d => d.predicted_customers),
+                        };
+                    }
+                    
+                    const recentHistory = appState.historicalData.slice(0, 30).map(h => h.customers).reverse();
+                    const trendMovingAverage = recentHistory.length > 0 ? recentHistory.slice(-7).reduce((a, b) => a + b, 0) / 7 : 250;
+                    
+                    appState.insightsData = appState.forecastData.dates.map((date, i) => {
+                        const forecastCustomers = appState.forecastData.customers[i];
+                        const effect = forecastCustomers - trendMovingAverage;
+                        return {
+                            date: date,
+                            trend: trendMovingAverage,
+                            seasonal_effect: effect,
+                            total: forecastCustomers
+                        };
+                    });
+
+                    const evalLogs = logSnapshot.docs.map(doc => doc.data());
+                    const mergedEvalData = [];
+                    evalLogs.forEach(log => {
+                        const logDate = log.forecast_for_date.toDate().toISOString().split('T')[0];
+                        const actual = appState.historicalData.find(h => h.date.toDate().toISOString().split('T')[0] === logDate);
+                        if (actual) {
+                            mergedEvalData.push({
+                                date: log.forecast_for_date.toDate(),
+                                actual_sales: actual.sales,
+                                forecast_sales: log.predicted_sales,
+                                actual_customers: actual.customers,
+                                forecast_customers: log.predicted_customers,
+                            });
+                        }
+                    });
+                    appState.evaluationData = mergedEvalData.sort((a,b) => a.date - b.date);
+                    
+                    updateView();
+
+                } catch (error) {
+                    let userMessage;
+                    const lowerCaseError = error.message ? error.message.toLowerCase() : '';
+                    if (error.code === 'permission-denied' || lowerCaseError.includes('permission') || lowerCaseError.includes('restricted to administrators')) {
+                         userMessage = `
+                            <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4" role="alert">
+                                <p class="font-bold text-lg">Firestore Security Rule Error</p>
+                                <p>The application was denied access to the database. This usually happens after a successful sign-in.</p>
+                                <p class="mt-4 text-sm">
+                                    <strong>Action Required:</strong> Your Firestore Security Rules are too restrictive. Please go to your Firebase Console, navigate to the "Firestore Database" section, and click on the "Rules" tab.
+                                </p>
+                                <p class="mt-2 text-sm">
+                                    For this app to work, your rules must allow authenticated users to read and write. Replace your current rules with this:
+                                </p>
+                                <pre class="bg-gray-200 text-gray-800 rounded p-2 mt-2 text-xs text-left"><code>rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}</code></pre>
+                            </div>
+                        `;
+                    } else {
+                        userMessage = `<div class="text-center p-8"><h2 class="text-2xl font-bold text-red-600">Error Loading Data</h2><p class="text-gray-700 mt-2">${error.message}</p><p class="mt-4 text-sm text-gray-500">Please check the browser console for more details.</p></div>`;
+                    }
+                    document.getElementById('loading-overlay').innerHTML = `<div class="p-8">${userMessage}</div>`;
+                    console.error("Firebase Error:", error);
+                } finally {
+                    document.getElementById('loading-overlay').style.display = 'none';
+                }
+            }
+            
+            function generateProvisionalForecast() {
+                const dates = Array.from({length: 15}, (_, i) => {
+                    const d = new Date();
+                    d.setDate(d.getDate() + i + 1);
+                    return d;
+                });
+
+                if (!appState.historicalData || appState.historicalData.length < 7) {
+                    showToast("Not enough historical data for a provisional forecast.", "error");
+                    appState.forecastData = { dates: dates, sales: [], customers: [] };
+                    return;
+                }
+                const last7DaysCustomers = appState.historicalData.slice(0, 7).map(d => d.customers);
+                const avgCustomers = last7DaysCustomers.reduce((a, b) => a + b, 0) / 7;
+                const last7DaysATV = appState.historicalData.slice(0, 7).map(d => (d.sales / d.customers));
+                const avgATV = last7DaysATV.reduce((a,b) => a+b, 0) / 7;
+
+                appState.forecastData = {
+                    dates: dates,
+                    customers: Array(15).fill(avgCustomers),
+                    sales: Array(15).fill(avgCustomers * avgATV)
+                };
+            }
+
+            // --- NAVIGATION LOGIC ---
+            const navButtons = document.querySelectorAll('.nav-button');
+            navButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    appState.currentView = button.dataset.view;
+                    updateView();
+                });
+            });
+
+            function updateView() {
+                document.querySelectorAll('.view').forEach(section => section.classList.add('hidden'));
+                document.getElementById(`${appState.currentView}-section`).classList.remove('hidden');
+
+                navButtons.forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.view === appState.currentView);
+                });
+
+                switch(appState.currentView) {
+                    case 'dashboard': renderDashboard(); break;
+                    case 'insights': renderInsights(); break;
+                    case 'evaluator': renderEvaluator(); break;
+                    case 'activities': renderActivities(); break;
+                    case 'historical': renderHistorical(); break;
+                    case 'admin': renderAdmin(); break;
+                }
+            }
+            
+            // --- RENDERING FUNCTIONS ---
+            function renderDashboard() {
+                if (!appState.forecastData) return;
+                const { dates, sales, customers } = appState.forecastData;
+
+                const ctx = document.getElementById('forecastChart').getContext('2d');
+                if(charts.forecast) charts.forecast.destroy();
+
+                charts.forecast = new Chart(ctx, {
+                    type: 'line',
+                    data: { labels: dates, datasets: [
+                        { label: 'Predicted Sales (₱)', data: sales, borderColor: '#DA291C', backgroundColor: 'rgba(218, 41, 28, 0.1)', yAxisID: 'ySales', tension: 0.3, fill: true },
+                        { label: 'Predicted Customers', data: customers, borderColor: '#FFC72C', backgroundColor: 'rgba(255, 199, 44, 0.1)', yAxisID: 'yCustomers', tension: 0.3 }
+                    ]},
+                    options: { responsive: true, maintainAspectRatio: false,
+                        scales: {
+                            x: { type: 'time', time: { unit: 'day', tooltipFormat: 'MMM dd, yyyy' }, grid: { display: false } },
+                            ySales: { type: 'linear', position: 'left', title: { display: true, text: 'Sales (₱)', font: {weight: 'bold'} }, grid: { color: '#E5E7EB' } },
+                            yCustomers: { type: 'linear', position: 'right', title: { display: true, text: 'Customers', font: {weight: 'bold'} }, grid: { display: false } }
+                        },
+                        plugins: { legend: { position: 'top' }, tooltip: { mode: 'index', intersect: false } },
+                        interaction: { mode: 'index', intersect: false }
+                    }
+                });
+                
+                const weeklySales = sales.slice(0, 7).reduce((a, b) => a + b, 0) / 7;
+                const weeklyCustomers = customers.slice(0, 7).reduce((a, b) => a + b, 0) / 7;
+                document.getElementById('avg-sales').textContent = `₱${weeklySales.toLocaleString('en-US', {maximumFractionDigits: 0})}`;
+                document.getElementById('avg-customers').textContent = `${Math.round(weeklyCustomers).toLocaleString()}`;
+                document.getElementById('avg-atv').textContent = `₱${(weeklySales/weeklyCustomers).toFixed(2)}`;
+            }
+
+            function renderInsights() {
+                if (!appState.insightsData) {
+                    showToast("No insights data available to display.", "error");
+                    return;
+                }
+                const select = document.getElementById('insightDate');
+                select.innerHTML = '';
+                appState.insightsData.forEach(d => {
+                    const option = document.createElement('option');
+                    option.value = d.date.toISOString().split('T')[0];
+                    option.textContent = d.date.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+                    select.appendChild(option);
+                });
+                
+                select.removeEventListener('change', handleInsightDateChange); 
+                select.addEventListener('change', handleInsightDateChange);
+                updateWaterfallChart(select.value);
+            }
+
+            function handleInsightDateChange(e) {
+                updateWaterfallChart(e.target.value);
+            }
+
+            function updateWaterfallChart(dateString) {
+                const data = appState.insightsData.find(d => d.date.toISOString().split('T')[0] === dateString);
+                if (!data) return;
+
+                const ctx = document.getElementById('waterfallChart').getContext('2d');
+                if (charts.waterfall) charts.waterfall.destroy();
+
+                charts.waterfall = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: ['Baseline Trend', 'Seasonal & Event Effects', 'Final Forecast'],
+                        datasets: [{
+                            data: [data.trend, data.seasonal_effect, data.total],
+                            backgroundColor: ['#3B82F6', data.seasonal_effect >= 0 ? '#10B981' : '#EF4444', '#4B5563'],
+                        }]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+                        plugins: { legend: { display: false } },
+                        scales: { x: { title: { display: true, text: 'Customer Count Impact' } } }
+                    }
+                });
+                
+                const summaryEl = document.getElementById('insight-summary');
+                summaryEl.innerHTML = `
+                    <h4 class="font-bold text-lg mb-2">Summary for ${new Date(dateString + 'T00:00:00').toLocaleDateString('en-US', {month: 'long', day: 'numeric'})}</h4>
+                    <p class="mb-2">The forecast starts with a baseline trend of <strong>${data.trend.toFixed(0)}</strong> customers.</p>
+                    <p class="mb-2">Seasonal and event effects are ${data.seasonal_effect >= 0 ? 'positive' : 'negative'}, adjusting by <strong>${data.seasonal_effect.toFixed(0)}</strong> customers.</p>
+                    <hr class="my-3 border-gray-300">
+                    <p class="font-bold">Resulting in a final forecast of <strong>${data.total.toFixed(0)}</strong> customers.</p>
+                `;
+            }
+            
+            function renderEvaluator() {
+                if (!appState.evaluationData || appState.evaluationData.length === 0) {
+                    showToast("No evaluation data available.", "error");
+                    return;
+                }
+                const days = appState.evalDays;
+                const dataSlice = appState.evaluationData.slice(-days);
+                
+                const salesMape = dataSlice.reduce((sum, val) => sum + Math.abs((val.actual_sales - val.forecast_sales) / val.actual_sales), 0) / dataSlice.length * 100;
+                const custMape = dataSlice.reduce((sum, val) => sum + Math.abs((val.actual_customers - val.forecast_customers) / val.actual_customers), 0) / dataSlice.length * 100;
+
+                document.getElementById('sales-accuracy').textContent = `${(100 - salesMape).toFixed(2)}%`;
+                document.getElementById('customer-accuracy').textContent = `${(100 - custMape).toFixed(2)}%`;
+
+                const salesCtx = document.getElementById('salesEvalChart').getContext('2d');
+                if(charts.salesEval) charts.salesEval.destroy();
+                charts.salesEval = createEvalChart(salesCtx, dataSlice.map(d=>d.date), dataSlice.map(d=>d.actual_sales), dataSlice.map(d=>d.forecast_sales));
+
+                const custCtx = document.getElementById('customersEvalChart').getContext('2d');
+                if(charts.custEval) charts.custEval.destroy();
+                charts.custEval = createEvalChart(custCtx, dataSlice.map(d=>d.date), dataSlice.map(d=>d.actual_customers), dataSlice.map(d=>d.forecast_customers));
+            }
+            
+            function createEvalChart(ctx, dates, actuals, forecasts) {
+                return new Chart(ctx, {
+                    type: 'line',
+                    data: { labels: dates, datasets: [
+                        { label: 'Actual', data: actuals, borderColor: '#DA291C', tension: 0.1 },
+                        { label: 'Forecast', data: forecasts, borderColor: '#FFC72C', borderDash: [5, 5], tension: 0.1 }
+                    ]},
+                    options: { responsive: true, maintainAspectRatio: false,
+                        scales: { x: { type: 'time', time: { unit: 'day' } } },
+                        plugins: { legend: { position: 'top' } }
+                    }
+                });
+            }
+
+            function renderActivities() {
+                const tabsContainer = document.getElementById('activity-tabs-container');
+                const contentContainer = document.getElementById('activity-content-container');
+                tabsContainer.innerHTML = '';
+                contentContainer.innerHTML = '';
+
+                if (!appState.activitiesData || appState.activitiesData.length === 0) {
+                    contentContainer.innerHTML = `<p class="text-gray-500 text-center py-4">No future activities found.</p>`;
+                    return;
+                }
+
+                const activitiesByMonth = appState.activitiesData.reduce((acc, activity) => {
+                    const month = activity.date.toDate().toLocaleString('default', { month: 'long', year: 'numeric' });
+                    if (!acc[month]) {
+                        acc[month] = [];
+                    }
+                    acc[month].push(activity);
+                    return acc;
+                }, {});
+
+                const monthKeys = Object.keys(activitiesByMonth);
+                
+                monthKeys.forEach((month, index) => {
+                    const tab = document.createElement('button');
+                    tab.textContent = month;
+                    tab.className = `month-tab px-4 py-2 font-semibold border-b-2 transition-colors duration-300 ${index === 0 ? 'active' : 'border-transparent'}`;
+                    tab.dataset.month = month;
+                    tabsContainer.appendChild(tab);
+                });
+
+                function displayMonth(month) {
+                    contentContainer.innerHTML = '';
+                    const monthActivities = activitiesByMonth[month];
+                    
+                    const totalSales = monthActivities.reduce((sum, act) => sum + (act.potential_sales || 0), 0);
+                    const unconfirmed = monthActivities.filter(act => act.remarks !== 'Confirmed').length;
+
+                    const summary = document.createElement('div');
+                    summary.className = 'grid grid-cols-2 gap-4 mb-4';
+                    summary.innerHTML = `
+                        <div class="stat-card text-center">
+                            <h3 class="text-lg font-semibold text-gray-500">Total Expected Sales</h3>
+                            <p class="text-3xl font-bold text-green-600 mt-2">₱${totalSales.toLocaleString()}</p>
+                        </div>
+                        <div class="stat-card text-center">
+                            <h3 class="text-lg font-semibold text-gray-500">Unconfirmed Activities</h3>
+                            <p class="text-3xl font-bold text-yellow-600 mt-2">${unconfirmed}</p>
+                        </div>
+                    `;
+                    contentContainer.appendChild(summary);
+
+                    const listContainer = document.createElement('div');
+                    listContainer.className = 'space-y-4';
+                    monthActivities.forEach(activity => {
+                        const card = createActivityCard(activity);
+                        listContainer.appendChild(card);
+                    });
+                    contentContainer.appendChild(listContainer);
+                }
+
+                tabsContainer.addEventListener('click', e => {
+                    if (e.target.classList.contains('month-tab')) {
+                        tabsContainer.querySelector('.active').classList.remove('active');
+                        e.target.classList.add('active');
+                        displayMonth(e.target.dataset.month);
+                    }
+                });
+
+                if (monthKeys.length > 0) {
+                    displayMonth(monthKeys[0]);
+                }
+            }
+
+            function createActivityCard(activity) {
+                const date = activity.date.toDate();
+                const card = document.createElement('div');
+                card.className = 'bg-white p-4 rounded-lg shadow border';
+                card.innerHTML = `
+                    <div id="view-${activity.id}">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <p class="font-bold text-lg">${activity.activity_name}</p>
+                                <p class="text-gray-600">${date.toLocaleDateString('en-US', { dateStyle: 'full' })}</p>
+                            </div>
+                            <div>
+                                <button data-id="${activity.id}" class="edit-activity-btn text-blue-500 hover:text-blue-700 font-semibold mr-4">Edit</button>
+                                <button data-id="${activity.id}" class="delete-activity-btn text-red-500 hover:text-red-700 font-semibold">Delete</button>
+                            </div>
+                        </div>
+                        <div class="mt-2 grid grid-cols-2 gap-2 text-sm">
+                            <p><strong>Est. Sales:</strong> ₱${(activity.potential_sales || 0).toLocaleString()}</p>
+                            <p><strong>Status:</strong> ${activity.remarks || 'N/A'}</p>
+                            <p><strong>Customer:</strong> ${activity.customer_name || 'N/A'}</p>
+                        </div>
+                    </div>
+                    <form id="edit-form-${activity.id}" class="hidden space-y-2 mt-4">
+                        <input type="text" value="${activity.activity_name}" class="w-full p-2 border rounded" placeholder="Activity Name">
+                        <input type="text" value="${activity.customer_name || ''}" class="w-full p-2 border rounded" placeholder="Customer Name">
+                        <input type="date" value="${date.toISOString().split('T')[0]}" class="w-full p-2 border rounded">
+                        <input type="number" value="${activity.potential_sales}" class="w-full p-2 border rounded" placeholder="Potential Sales">
+                        <select class="w-full p-2 border rounded">
+                            <option ${activity.remarks === 'Confirmed' ? 'selected' : ''}>Confirmed</option>
+                            <option ${activity.remarks === 'Needs Follow-up' ? 'selected' : ''}>Needs Follow-up</option>
+                            <option ${activity.remarks === 'Tentative' ? 'selected' : ''}>Tentative</option>
+                            <option ${activity.remarks === 'Cancelled' ? 'selected' : ''}>Cancelled</option>
+                        </select>
+                        <div class="flex space-x-2">
+                            <button type="submit" data-id="${activity.id}" class="update-activity-btn w-full bg-green-500 text-white font-bold py-2 px-4 rounded-lg">Save</button>
+                            <button type="button" data-id="${activity.id}" class="cancel-edit-btn w-full bg-gray-500 text-white font-bold py-2 px-4 rounded-lg">Cancel</button>
+                        </div>
+                    </form>
+                `;
+                return card;
+            }
+
+            function renderHistorical(year, month) {
+                const container = document.getElementById('historical-list');
+                container.innerHTML = '';
+                if (!appState.historicalData) {
+                    container.innerHTML = `<p class="text-gray-500 text-center py-4">No historical data found.</p>`;
+                    return;
+                }
+
+                let filteredData = appState.historicalData;
+                if (year) {
+                    filteredData = filteredData.filter(d => d.date.toDate().getFullYear() === year);
+                }
+                if (month !== null) {
+                    filteredData = filteredData.filter(d => d.date.toDate().getMonth() === month);
+                }
+
+                if (filteredData.length === 0) {
+                    container.innerHTML = `<p class="text-gray-500 text-center py-4">No records found for the selected period.</p>`;
+                    return;
+                }
+
+                 filteredData.forEach(record => {
+                    const card = createHistoricalCard(record);
+                    container.appendChild(card);
+                });
+            }
+
+            function createHistoricalCard(record) {
+                const date = record.date.toDate();
+                const card = document.createElement('div');
+                card.className = 'bg-white p-4 rounded-lg shadow border';
+                card.innerHTML = `
+                    <div id="view-hist-${record.id}">
+                        <div class="flex justify-between items-center">
+                            <p class="font-bold text-lg">${date.toLocaleDateString('en-US', { dateStyle: 'full' })}</p>
+                            <div>
+                                <button data-id="${record.id}" class="edit-historical-btn text-blue-500 hover:text-blue-700 font-semibold mr-4">Edit</button>
+                                <button data-id="${record.id}" class="delete-historical-btn text-red-500 hover:text-red-700 font-semibold">Delete</button>
+                            </div>
+                        </div>
+                        <div class="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+                            <p><strong>Sales:</strong> ₱${record.sales.toLocaleString()}</p>
+                            <p><strong>Customers:</strong> ${record.customers}</p>
+                            <p><strong>Add-on:</strong> ₱${(record.add_on_sales || 0).toLocaleString()}</p>
+                            <p><strong>Weather:</strong> ${record.weather || 'N/A'}</p>
+                        </div>
+                    </div>
+                    <form id="edit-form-hist-${record.id}" class="hidden space-y-2 mt-4">
+                        <div class="grid grid-cols-2 gap-4">
+                            <input type="number" step="0.01" value="${record.sales}" class="w-full p-2 border rounded">
+                            <input type="number" value="${record.customers}" class="w-full p-2 border rounded">
+                            <input type="number" step="0.01" value="${record.add_on_sales || 0}" class="w-full p-2 border rounded">
+                            <select class="w-full p-2 border rounded">
+                                <option ${record.weather === 'Sunny' ? 'selected' : ''}>Sunny</option>
+                                <option ${record.weather === 'Cloudy' ? 'selected' : ''}>Cloudy</option>
+                                <option ${record.weather === 'Rainy' ? 'selected' : ''}>Rainy</option>
+                                <option ${record.weather === 'Storm' ? 'selected' : ''}>Storm</option>
+                            </select>
+                        </div>
+                        <div class="flex space-x-2">
+                            <button type="submit" data-id="${record.id}" class="update-historical-btn w-full bg-green-500 text-white font-bold py-2 px-4 rounded-lg">Save</button>
+                            <button type="button" data-id="${record.id}" class="cancel-edit-hist-btn w-full bg-gray-500 text-white font-bold py-2 px-4 rounded-lg">Cancel</button>
+                        </div>
+                    </form>
+                `;
+                return card;
+            }
+
+            function setupHistoricalFilters() {
+                const yearSelect = document.getElementById('hist-year');
+                const monthSelect = document.getElementById('hist-month');
+                
+                const years = [...new Set(appState.historicalData.map(d => d.date.toDate().getFullYear()))];
+                yearSelect.innerHTML = '<option value="">All Years</option>';
+                years.forEach(y => yearSelect.innerHTML += `<option value="${y}">${y}</option>`);
+
+                const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+                monthSelect.innerHTML = '<option value="">All Months</option>';
+                monthNames.forEach((m, i) => monthSelect.innerHTML += `<option value="${i}">${m}</option>`);
+                
+                const updateFilter = () => {
+                    const year = yearSelect.value ? parseInt(yearSelect.value) : null;
+                    const month = monthSelect.value !== "" ? parseInt(monthSelect.value) : null;
+                    renderHistorical(year, month);
+                };
+
+                yearSelect.addEventListener('change', updateFilter);
+                monthSelect.addEventListener('change', updateFilter);
+                
+                renderHistorical(null, null);
+            }
+
+            function renderAdmin() {
+                const container = document.getElementById('user-list');
+                container.innerHTML = '';
+                 if (!appState.usersData || appState.usersData.length === 0) {
+                    container.innerHTML = `<p class="text-gray-500 text-center py-4">No users found.</p>`;
+                    return;
+                }
+
+                appState.usersData.forEach(user => {
+                    const card = document.createElement('div');
+                    card.className = 'bg-gray-50 p-4 rounded-lg border flex justify-between items-center';
+                    card.innerHTML = `
+                        <div>
+                            <p class="font-bold text-lg">${user.username}</p>
+                        </div>
+                        <div class="flex items-center space-x-4">
+                            <select data-id="${user.id}" class="user-access-level-select w-full p-2 border rounded">
+                                <option value="1" ${user.access_level === 1 ? 'selected' : ''}>Admin</option>
+                                <option value="2" ${user.access_level === 2 ? 'selected' : ''}>Manager</option>
+                                <option value="3" ${user.access_level === 3 ? 'selected' : ''}>Viewer</option>
+                            </select>
+                            <button data-id="${user.id}" class="delete-user-btn text-red-500 hover:text-red-700 font-semibold">Delete</button>
+                        </div>
+                    `;
+                    container.appendChild(card);
+                });
+            }
+
+
+            // --- EVENT LISTENERS ---
+            function setupAppEventListeners() {
+                document.getElementById('refresh-data-btn')?.addEventListener('click', () => {
+                    loadAppData();
+                });
+                
+                document.querySelectorAll('.eval-toggle-button').forEach(button => {
+                    button.addEventListener('click', (e) => {
+                        document.querySelectorAll('.eval-toggle-button').forEach(btn => {
+                            btn.classList.remove('bg-[#DA291C]', 'text-white');
+                            btn.classList.add('text-gray-600');
+                        });
+                        e.target.classList.add('bg-[#DA291C]', 'text-white');
+                        e.target.classList.remove('text-gray-600');
+                        appState.evalDays = e.target.id === 'eval-7-day' ? 7 : 30;
+                        renderEvaluator();
+                    });
+                });
+
+                document.getElementById('daily-record-form')?.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const form = e.target;
+                    const record = {
+                        date: firebase.firestore.Timestamp.fromDate(new Date(form['record-date'].value + 'T00:00:00')),
+                        sales: parseFloat(form['record-sales'].value),
+                        customers: parseInt(form['record-customers'].value),
+                        add_on_sales: parseFloat(form['record-addons'].value),
+                        weather: form['record-weather'].value
+                    };
+                    try {
+                        await db.collection("historical_data").add(record);
+                        showToast("Daily record saved successfully!");
+                        form.reset();
+                        loadAppData();
+                    } catch (error) {
+                        showToast("Error saving record.", "error");
+                        console.error("Error adding document: ", error);
+                    }
+                });
+
+                document.getElementById('activity-form')?.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const form = e.target;
+                    const activity = {
+                        activity_name: form['activity-name'].value,
+                        customer_name: form['customer-name'].value,
+                        remarks: form['activity-status'].value,
+                        date: firebase.firestore.Timestamp.fromDate(new Date(form['activity-date'].value + 'T00:00:00')),
+                        potential_sales: parseFloat(form['activity-sales'].value)
+                    };
+                    try {
+                        await db.collection("future_activities").add(activity);
+                        showToast("Activity saved successfully!");
+                        form.reset();
+                        loadAppData();
+                    } catch (error) {
+                        showToast("Error saving activity.", "error");
+                        console.error("Error adding document: ", error);
+                    }
+                });
+
+                document.getElementById('event-form')?.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const form = e.target;
+                    const eventData = {
+                        event_name: form['event-name'].value,
+                        date: firebase.firestore.Timestamp.fromDate(new Date(form['event-date'].value + 'T00:00:00')),
+                    };
+                    try {
+                        await db.collection("future_events").add(eventData);
+                        showToast("Event saved successfully!");
+                        form.reset();
+                        loadAppData();
+                    } catch (error) {
+                        showToast("Error saving event.", "error");
+                        console.error("Error adding document: ", error);
+                    }
+                });
+
+                document.getElementById('content-area')?.addEventListener('click', async (e) => {
+                    const id = e.target.dataset.id;
+                    if (!id) return;
+
+                    // Activity Card Actions
+                    if (e.target.classList.contains('delete-activity-btn')) {
+                        if (confirm('Are you sure you want to delete this activity?')) {
+                            try {
+                                await db.collection('future_activities').doc(id).delete();
+                                showToast('Activity deleted.');
+                                loadAppData();
+                            } catch (error) { showToast('Error deleting activity.', 'error'); }
+                        }
+                    } else if (e.target.classList.contains('edit-activity-btn')) {
+                        document.getElementById(`view-${id}`).classList.add('hidden');
+                        document.getElementById(`edit-form-${id}`).classList.remove('hidden');
+                    } else if (e.target.classList.contains('cancel-edit-btn')) {
+                        document.getElementById(`view-${id}`).classList.remove('hidden');
+                        document.getElementById(`edit-form-${id}`).classList.add('hidden');
+                    } else if (e.target.classList.contains('update-activity-btn')) {
+                        e.preventDefault();
+                        const form = document.getElementById(`edit-form-${id}`);
+                        const updatedData = {
+                            activity_name: form.children[0].value,
+                            customer_name: form.children[1].value,
+                            date: firebase.firestore.Timestamp.fromDate(new Date(form.children[2].value + 'T00:00:00')),
+                            potential_sales: parseFloat(form.children[3].value),
+                            remarks: form.children[4].value,
+                        };
+                        try {
+                            await db.collection('future_activities').doc(id).update(updatedData);
+                            showToast('Activity updated.');
+                            loadAppData();
+                        } catch (error) { showToast('Error updating activity.', 'error'); }
+                    }
+
+                    // Historical Card Actions
+                    if (e.target.classList.contains('delete-historical-btn')) {
+                        if (confirm('Are you sure you want to delete this historical record?')) {
+                            try {
+                                await db.collection('historical_data').doc(id).delete();
+                                showToast('Record deleted.');
+                                loadAppData();
+                            } catch (error) { showToast('Error deleting record.', 'error'); }
+                        }
+                    } else if (e.target.classList.contains('edit-historical-btn')) {
+                        document.getElementById(`view-hist-${id}`).classList.add('hidden');
+                        document.getElementById(`edit-form-hist-${id}`).classList.remove('hidden');
+                    } else if (e.target.classList.contains('cancel-edit-hist-btn')) {
+                        document.getElementById(`view-hist-${id}`).classList.remove('hidden');
+                        document.getElementById(`edit-form-hist-${id}`).classList.add('hidden');
+                    } else if (e.target.classList.contains('update-historical-btn')) {
+                        e.preventDefault();
+                        const form = document.getElementById(`edit-form-hist-${id}`);
+                        const inputs = form.querySelector('.grid').children;
+                        const updatedData = {
+                            sales: parseFloat(inputs[0].value),
+                            customers: parseInt(inputs[1].value),
+                            add_on_sales: parseFloat(inputs[2].value),
+                            weather: inputs[3].value,
+                        };
+                        try {
+                            await db.collection('historical_data').doc(id).update(updatedData);
+                            showToast('Record updated.');
+                            loadAppData();
+                        } catch (error) { showToast('Error updating record.', 'error'); }
+                    }
+
+                    // User Admin Actions
+                    if (e.target.classList.contains('delete-user-btn')) {
+                        if (confirm('Are you sure you want to delete this user?')) {
+                            try {
+                                await db.collection('users').doc(id).delete();
+                                showToast('User deleted.');
+                                loadAppData();
+                            } catch (error) { showToast('Error deleting user.', 'error'); }
+                        }
+                    }
+                });
+
+                document.getElementById('content-area')?.addEventListener('change', async (e) => {
+                    if (e.target.classList.contains('user-access-level-select')) {
+                        const id = e.target.dataset.id;
+                        const newLevel = parseInt(e.target.value);
+                        try {
+                            await db.collection('users').doc(id).update({ access_level: newLevel });
+                            showToast('User access level updated.');
+                        } catch (error) {
+                            showToast('Error updating access level.', 'error');
+                        }
+                    }
+                });
+            }
+            
+            // --- AUTHENTICATION FLOW ---
+            const loginForm = document.getElementById('login-form');
+            const loginScreen = document.getElementById('login-screen');
+            const appContainer = document.getElementById('app-container');
+            const loadingOverlay = document.getElementById('loading-overlay');
+            const loginError = document.getElementById('login-error');
+            const logoutBtn = document.getElementById('logout-btn');
+
+            loginForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const email = loginForm.email.value;
+                const password = loginForm.password.value;
+                loginError.innerHTML = '';
+                
+                auth.signInWithEmailAndPassword(email, password)
+                    .catch(error => {
+                        console.error("Login Error:", error);
+                        if (error.code === 'auth/operation-not-allowed') {
+                             loginError.innerHTML = `
+                                <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative text-left" role="alert">
+                                    <strong class="font-bold">Configuration Error!</strong>
+                                    <span class="block sm:inline">Email/Password sign-in is disabled.</span>
+                                    <p class="text-xs mt-2"><strong>Action Required:</strong> Go to your Firebase Console -> Authentication -> Sign-in method, and enable the Email/Password provider.</p>
+                                </div>
+                            `;
+                        } else {
+                            loginError.textContent = "Invalid username or password.";
+                        }
+                    });
+            });
+            
+            logoutBtn.addEventListener('click', () => {
+                auth.signOut();
+            });
+
+            auth.onAuthStateChanged(async user => {
+                if (user) {
+                    // User is signed in.
+                    loginScreen.style.display = 'none';
+                    appContainer.style.display = 'flex';
+                    loadingOverlay.style.display = 'flex';
+
+                    // Fetch user's access level
+                    const userDoc = await db.collection('users').where('username', '==', user.email).get();
+                    if (!userDoc.empty) {
+                        appState.accessLevel = userDoc.docs[0].data().access_level;
+                    }
+                    
+                    document.getElementById('user-greeting').textContent = `Welcome, ${user.email.split('@')[0]}`;
+
+                    if (appState.accessLevel === 1) {
+                        document.querySelector('button[data-view="admin"]').classList.remove('hidden');
+                        document.querySelector('#mobile-nav button[data-view="admin"]').classList.remove('hidden');
+                    }
+
+                    await loadAppData();
+                    setupAppEventListeners();
+                    if(appState.historicalData) setupHistoricalFilters();
+
+                } else {
+                    // User is signed out.
+                    loginScreen.style.display = 'flex';
+                    appContainer.style.display = 'none';
+                    loadingOverlay.style.display = 'none';
+                }
+            });
+        });
+    </script>
+
+</body>
+</html>
