@@ -498,22 +498,40 @@
                         };
                     });
 
-                    const evalLogs = logSnapshot.docs.map(doc => doc.data());
-                    const mergedEvalData = [];
-                    evalLogs.forEach(log => {
-                        const logDate = log.forecast_for_date.toDate().toISOString().split('T')[0];
-                        const actual = appState.historicalData.find(h => h.date.toDate().toISOString().split('T')[0] === logDate);
-                        if (actual) {
-                            mergedEvalData.push({
-                                date: log.forecast_for_date.toDate(),
-                                actual_sales: actual.sales,
-                                forecast_sales: log.predicted_sales,
-                                actual_customers: actual.customers,
-                                forecast_customers: log.predicted_customers,
-                            });
-                        }
-                    });
-                    appState.evaluationData = mergedEvalData.sort((a,b) => a.date - b.date);
+                    // --- CORRECTED EVALUATION DATA MERGE LOGIC ---
+
+// 1. Get all recent forecast log entries.
+const evalLogs = logSnapshot.docs.map(doc => doc.data());
+
+// 2. De-duplicate the logs to get only the single MOST RECENT forecast for each day.
+const latestForecasts = new Map();
+evalLogs.forEach(log => {
+    const logDateStr = log.forecast_for_date.toDate().toISOString().split('T')[0];
+    if (!latestForecasts.has(logDateStr)) {
+        latestForecasts.set(logDateStr, log);
+    }
+});
+
+// 3. Iterate through historical data and match it to the unique, latest forecast.
+const mergedEvalData = [];
+appState.historicalData.forEach(actual => {
+    const actualDateStr = actual.date.toDate().toISOString().split('T')[0];
+    if (latestForecasts.has(actualDateStr)) {
+        const forecast = latestForecasts.get(actualDateStr);
+        mergedEvalData.push({
+            date: actual.date.toDate(),
+            actual_sales: actual.sales,
+            // Perform addition on sales forecast ONLY.
+            forecast_sales: forecast.predicted_sales + (actual.add_on_sales || 0), 
+            actual_customers: actual.customers,
+            // Customer forecast is NOT adjusted.
+            forecast_customers: forecast.predicted_customers,
+        });
+    }
+});
+
+// 4. Sort the final, clean data by date for the charts.
+appState.evaluationData = mergedEvalData.sort((a,b) => a.date - b.date);
                     
                     updateView();
 
