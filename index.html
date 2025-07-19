@@ -498,41 +498,44 @@
                         };
                     });
 
-                    // --- CORRECTED EVALUATION DATA MERGE LOGIC ---
+                   // --- FINAL CORRECTED EVALUATION DATA MERGE LOGIC ---
 
-// 1. Get all recent forecast log entries.
-const evalLogs = logSnapshot.docs.map(doc => doc.data());
-
-// 2. De-duplicate the logs to get only the single MOST RECENT forecast for each day.
+// 1. De-duplicate forecast logs to get the most recent one per day.
 const latestForecasts = new Map();
-evalLogs.forEach(log => {
+logSnapshot.docs.forEach(doc => {
+    const log = doc.data();
     const logDateStr = log.forecast_for_date.toDate().toISOString().split('T')[0];
     if (!latestForecasts.has(logDateStr)) {
         latestForecasts.set(logDateStr, log);
     }
 });
 
-// 3. Iterate through historical data and match it to the unique, latest forecast.
-const mergedEvalData = [];
+// 2. De-duplicate the app's historical data to ensure one record per day.
+const uniqueActuals = new Map();
 appState.historicalData.forEach(actual => {
     const actualDateStr = actual.date.toDate().toISOString().split('T')[0];
+    if (!uniqueActuals.has(actualDateStr)) {
+        uniqueActuals.set(actualDateStr, actual);
+    }
+});
+
+// 3. Merge the two de-duplicated maps to create the final, clean evaluation data.
+const mergedEvalData = [];
+uniqueActuals.forEach((actual, actualDateStr) => {
     if (latestForecasts.has(actualDateStr)) {
         const forecast = latestForecasts.get(actualDateStr);
         mergedEvalData.push({
             date: actual.date.toDate(),
             actual_sales: actual.sales,
-            // Perform addition on sales forecast ONLY.
-            forecast_sales: forecast.predicted_sales + (actual.add_on_sales || 0), 
+            forecast_sales: forecast.predicted_sales + (actual.add_on_sales || 0),
             actual_customers: actual.customers,
-            // Customer forecast is NOT adjusted.
             forecast_customers: forecast.predicted_customers,
         });
     }
 });
 
-// 4. Sort the final, clean data by date for the charts.
+// 4. Sort the final, clean data by date to ensure the chart lines are drawn correctly.
 appState.evaluationData = mergedEvalData.sort((a,b) => a.date - b.date);
-                    
                     updateView();
 
                 } catch (error) {
