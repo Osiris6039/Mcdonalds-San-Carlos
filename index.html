@@ -525,12 +525,13 @@ uniqueActuals.forEach((actual, actualDateStr) => {
     if (latestForecasts.has(actualDateStr)) {
         const forecast = latestForecasts.get(actualDateStr);
         mergedEvalData.push({
-            date: actual.date.toDate(),
-            actual_sales: actual.sales,
-            forecast_sales: forecast.predicted_sales + (actual.add_on_sales || 0),
-            actual_customers: actual.customers,
-            forecast_customers: forecast.predicted_customers,
-        });
+    date: actual.date.toDate(),
+    // DEFENSIVE CODING: Force all values to be numbers to prevent type errors.
+    actual_sales: Number(actual.sales),
+    forecast_sales: Number(forecast.predicted_sales) + Number(actual.add_on_sales || 0),
+    actual_customers: Number(actual.customers),
+    forecast_customers: Number(forecast.predicted_customers),
+});
     }
 });
 
