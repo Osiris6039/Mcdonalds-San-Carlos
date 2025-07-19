@@ -507,6 +507,7 @@
                             mergedEvalData.push({
                                 date: log.forecast_for_date.toDate(),
                                 actual_sales: actual.sales,
+                                 // CORRECTED: Add-on sales are now added to the predicted sales for a balanced evaluation.
                                 forecast_sales: log.predicted_sales + (actual.add_on_sales || 0),
                                 actual_customers: actual.customers,
                                 forecast_customers: log.predicted_customers,
